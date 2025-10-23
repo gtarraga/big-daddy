@@ -240,7 +240,7 @@ describe('Topology Durable Object', () => {
 			});
 
 			// Create index
-			const result = await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			const result = await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 			expect(result.success).toBe(true);
 
 			// Verify index was created
@@ -248,7 +248,7 @@ describe('Topology Durable Object', () => {
 			expect(topology.virtual_indexes).toHaveLength(1);
 			expect(topology.virtual_indexes[0].index_name).toBe('idx_email');
 			expect(topology.virtual_indexes[0].table_name).toBe('users');
-			expect(topology.virtual_indexes[0].column_name).toBe('email');
+			expect(JSON.parse(topology.virtual_indexes[0].columns)).toEqual(['email']);
 			expect(topology.virtual_indexes[0].index_type).toBe('hash');
 			expect(topology.virtual_indexes[0].status).toBe('building');
 			expect(topology.virtual_indexes[0].error_message).toBeNull();
@@ -277,10 +277,10 @@ describe('Topology Durable Object', () => {
 			});
 
 			// Create first index
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 
 			// Try to create duplicate
-			const result = await stub.createVirtualIndex('idx_email', 'users', 'name', 'hash');
+			const result = await stub.createVirtualIndex('idx_email', 'users', ['name'], 'hash');
 			expect(result.success).toBe(false);
 			expect(result.error).toContain('already exists');
 		});
@@ -292,7 +292,7 @@ describe('Topology Durable Object', () => {
 			await stub.create(2);
 
 			// Try to create index on non-existent table
-			const result = await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			const result = await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 			expect(result.success).toBe(false);
 			expect(result.error).toContain('does not exist');
 		});
@@ -319,7 +319,7 @@ describe('Topology Durable Object', () => {
 				},
 			});
 
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 
 			// Update to ready
 			await stub.updateIndexStatus('idx_email', 'ready');
@@ -351,7 +351,7 @@ describe('Topology Durable Object', () => {
 				},
 			});
 
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 
 			// Update to failed with error
 			await stub.updateIndexStatus('idx_email', 'failed', 'Column does not exist');
@@ -383,7 +383,7 @@ describe('Topology Durable Object', () => {
 				},
 			});
 
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 
 			// Add index entry
 			await stub.batchUpsertIndexEntries('idx_email', [{ keyValue: 'alice@example.com', shardIds: [0, 1] }]);
@@ -424,7 +424,7 @@ describe('Topology Durable Object', () => {
 				},
 			});
 
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 			await stub.batchUpsertIndexEntries('idx_email', [{ keyValue: 'alice@example.com', shardIds: [0, 1] }]);
 
 			// Get shards for existing value
@@ -458,7 +458,7 @@ describe('Topology Durable Object', () => {
 				},
 			});
 
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 			await stub.batchUpsertIndexEntries('idx_email', [
 				{ keyValue: 'alice@example.com', shardIds: [0, 1] },
 				{ keyValue: 'bob@example.com', shardIds: [1] },
@@ -496,7 +496,7 @@ describe('Topology Durable Object', () => {
 				},
 			});
 
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 
 			// Batch insert multiple entries
 			const result = await stub.batchUpsertIndexEntries('idx_email', [
@@ -542,7 +542,7 @@ describe('Topology Durable Object', () => {
 				},
 			});
 
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 
 			// Initial batch insert
 			await stub.batchUpsertIndexEntries('idx_email', [
@@ -593,7 +593,7 @@ describe('Topology Durable Object', () => {
 				},
 			});
 
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 
 			// Empty batch should return count 0
 			const result = await stub.batchUpsertIndexEntries('idx_email', []);
@@ -625,7 +625,7 @@ describe('Topology Durable Object', () => {
 				},
 			});
 
-			await stub.createVirtualIndex('idx_email', 'users', 'email', 'hash');
+			await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
 
 			// Create a large batch (100 entries)
 			const entries = [];

@@ -374,7 +374,7 @@ describe('Conductor', () => {
 		expect(topology.virtual_indexes).toHaveLength(1);
 		expect(topology.virtual_indexes[0].index_name).toBe('idx_email');
 		expect(topology.virtual_indexes[0].table_name).toBe('users');
-		expect(topology.virtual_indexes[0].column_name).toBe('email');
+		expect(JSON.parse(topology.virtual_indexes[0].columns)).toEqual(['email']);
 		expect(topology.virtual_indexes[0].index_type).toBe('hash');
 		expect(topology.virtual_indexes[0].status).toBe('building');
 	});
@@ -438,21 +438,186 @@ describe('Conductor', () => {
 		const conductor = createConductor(dbId, env);
 
 		// Try to create index on non-existent table
-		await expect(conductor.sql`CREATE INDEX idx_email ON users(email)`).rejects.toThrow('does not exist');
+		await expect(conductor.sql`CREATE INDEX idx_email ON users(email)`).rejects.toThrow('not found');
 	});
 
-	it('should error on multi-column indexes', async () => {
+	it('should create composite (multi-column) indexes', async () => {
 		const dbId = 'test-create-index-6';
 		await initializeTopology(dbId, 3);
 
 		const conductor = createConductor(dbId, env);
 
-		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
+		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, country TEXT)`;
 
-		// Try to create multi-column index
-		await expect(conductor.sql`CREATE INDEX idx_name_email ON users(name, email)`).rejects.toThrow(
-			'Multi-column indexes are not yet supported',
-		);
+		// Create multi-column index
+		await conductor.sql`CREATE INDEX idx_country_email ON users(country, email)`;
+
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		const topology = await topologyStub.getTopology();
+
+		expect(topology.virtual_indexes).toHaveLength(1);
+		expect(topology.virtual_indexes[0].index_name).toBe('idx_country_email');
+		expect(JSON.parse(topology.virtual_indexes[0].columns)).toEqual(['country', 'email']);
+		expect(topology.virtual_indexes[0].status).toBe('building');
+	});
+
+	it('should use composite indexes for AND WHERE clauses', async () => {
+		const dbId = 'test-composite-where-1';
+		await initializeTopology(dbId, 10); // Use many shards to see shard reduction
+
+		const conductor = createConductor(dbId, env);
+
+		// Create table with composite index
+		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, country TEXT, city TEXT, name TEXT)`;
+		await conductor.sql`CREATE INDEX idx_country_city ON users(country, city)`;
+
+		// Insert test data
+		await conductor.sql`INSERT INTO users (id, country, city, name) VALUES (1, ${'USA'}, ${'NYC'}, ${'Alice'})`;
+		await conductor.sql`INSERT INTO users (id, country, city, name) VALUES (2, ${'USA'}, ${'LA'}, ${'Bob'})`;
+		await conductor.sql`INSERT INTO users (id, country, city, name) VALUES (3, ${'UK'}, ${'London'}, ${'Charlie'})`;
+
+		// Build the index
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		await topologyStub.batchUpsertIndexEntries('idx_country_city', [
+			{ keyValue: JSON.stringify(['USA', 'NYC']), shardIds: [0] },
+			{ keyValue: JSON.stringify(['USA', 'LA']), shardIds: [1] },
+			{ keyValue: JSON.stringify(['UK', 'London']), shardIds: [2] },
+		]);
+		await topologyStub.updateIndexStatus('idx_country_city', 'ready');
+
+		// Query with composite WHERE - should use the index
+		const result = await conductor.sql`SELECT * FROM users WHERE country = ${'USA'} AND city = ${'NYC'}`;
+
+		expect(result.rows).toHaveLength(1);
+		expect(result.rows[0].name).toBe('Alice');
+	});
+
+	it('should use composite index for leftmost prefix queries', async () => {
+		const dbId = 'test-composite-where-2';
+		await initializeTopology(dbId, 10);
+
+		const conductor = createConductor(dbId, env);
+
+		// Create table with 3-column composite index
+		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, subcategory TEXT, brand TEXT, name TEXT)`;
+		await conductor.sql`CREATE INDEX idx_cat_subcat_brand ON products(category, subcategory, brand)`;
+
+		// Insert test data
+		await conductor.sql`INSERT INTO products (id, category, subcategory, brand, name) VALUES (1, ${'Electronics'}, ${'Phones'}, ${'Apple'}, ${'iPhone'})`;
+		await conductor.sql`INSERT INTO products (id, category, subcategory, brand, name) VALUES (2, ${'Electronics'}, ${'Laptops'}, ${'Dell'}, ${'XPS'})`;
+
+		// Build the index
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		await topologyStub.batchUpsertIndexEntries('idx_cat_subcat_brand', [
+			{ keyValue: JSON.stringify(['Electronics', 'Phones', 'Apple']), shardIds: [0] },
+			{ keyValue: JSON.stringify(['Electronics', 'Laptops', 'Dell']), shardIds: [1] },
+		]);
+		await topologyStub.updateIndexStatus('idx_cat_subcat_brand', 'ready');
+
+		// Query with full composite key
+		const result1 = await conductor.sql`SELECT * FROM products WHERE category = ${'Electronics'} AND subcategory = ${'Phones'} AND brand = ${'Apple'}`;
+		expect(result1.rows).toHaveLength(1);
+		expect(result1.rows[0].name).toBe('iPhone');
+
+		// Query with leftmost 2-column prefix (category, subcategory)
+		const result2 = await conductor.sql`SELECT * FROM products WHERE category = ${'Electronics'} AND subcategory = ${'Laptops'}`;
+		expect(result2.rows).toHaveLength(1);
+		expect(result2.rows[0].name).toBe('XPS');
+	});
+
+	it('should use indexes for IN queries', async () => {
+		const dbId = 'test-in-query-1';
+		await initializeTopology(dbId, 10); // Use many shards to see optimization
+
+		const conductor = createConductor(dbId, env);
+
+		// Create table with indexed column
+		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, country TEXT, name TEXT)`;
+		await conductor.sql`CREATE INDEX idx_country ON users(country)`;
+
+		// Insert test data
+		await conductor.sql`INSERT INTO users (id, country, name) VALUES (1, ${'USA'}, ${'Alice'})`;
+		await conductor.sql`INSERT INTO users (id, country, name) VALUES (2, ${'UK'}, ${'Bob'})`;
+		await conductor.sql`INSERT INTO users (id, country, name) VALUES (3, ${'Canada'}, ${'Charlie'})`;
+		await conductor.sql`INSERT INTO users (id, country, name) VALUES (4, ${'USA'}, ${'David'})`;
+		await conductor.sql`INSERT INTO users (id, country, name) VALUES (5, ${'Germany'}, ${'Eve'})`;
+
+		// Build the index
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		await topologyStub.batchUpsertIndexEntries('idx_country', [
+			{ keyValue: 'USA', shardIds: [0, 1] },
+			{ keyValue: 'UK', shardIds: [2] },
+			{ keyValue: 'Canada', shardIds: [3] },
+			{ keyValue: 'Germany', shardIds: [4] },
+		]);
+		await topologyStub.updateIndexStatus('idx_country', 'ready');
+
+		// Query with IN - should only hit shards 0, 1, 2 (not all 10)
+		const result = await conductor.sql`SELECT * FROM users WHERE country IN (${'USA'}, ${'UK'})`;
+
+		// Should find 3 users: Alice, David (USA), and Bob (UK)
+		expect(result.rows).toHaveLength(3);
+
+		const names = result.rows.map(r => r.name).sort();
+		expect(names).toEqual(['Alice', 'Bob', 'David']);
+	});
+
+	it('should handle IN queries with non-existent values', async () => {
+		const dbId = 'test-in-query-2';
+		await initializeTopology(dbId, 5);
+
+		const conductor = createConductor(dbId, env);
+
+		// Create table with indexed column
+		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, name TEXT)`;
+		await conductor.sql`CREATE INDEX idx_category ON products(category)`;
+
+		// Insert test data
+		await conductor.sql`INSERT INTO products (id, category, name) VALUES (1, ${'Electronics'}, ${'Phone'})`;
+
+		// Build the index
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		await topologyStub.batchUpsertIndexEntries('idx_category', [
+			{ keyValue: 'Electronics', shardIds: [0] },
+		]);
+		await topologyStub.updateIndexStatus('idx_category', 'ready');
+
+		// Query with IN containing non-existent values
+		const result = await conductor.sql`SELECT * FROM products WHERE category IN (${'NonExistent'}, ${'AlsoMissing'})`;
+
+		// Should return empty result set
+		expect(result.rows).toHaveLength(0);
+	});
+
+	it('should handle IN queries with mix of existent and non-existent values', async () => {
+		const dbId = 'test-in-query-3';
+		await initializeTopology(dbId, 5);
+
+		const conductor = createConductor(dbId, env);
+
+		// Create table with indexed column
+		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, name TEXT)`;
+		await conductor.sql`CREATE INDEX idx_category ON products(category)`;
+
+		// Insert test data
+		await conductor.sql`INSERT INTO products (id, category, name) VALUES (1, ${'Electronics'}, ${'Phone'})`;
+		await conductor.sql`INSERT INTO products (id, category, name) VALUES (2, ${'Books'}, ${'Novel'})`;
+
+		// Build the index
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		await topologyStub.batchUpsertIndexEntries('idx_category', [
+			{ keyValue: 'Electronics', shardIds: [0] },
+			{ keyValue: 'Books', shardIds: [1] },
+		]);
+		await topologyStub.updateIndexStatus('idx_category', 'ready');
+
+		// Query with IN containing both existent and non-existent values
+		const result = await conductor.sql`SELECT * FROM products WHERE category IN (${'Electronics'}, ${'NonExistent'}, ${'Books'})`;
+
+		// Should return only the 2 matching products
+		expect(result.rows).toHaveLength(2);
+		const names = result.rows.map(r => r.name).sort();
+		expect(names).toEqual(['Novel', 'Phone']);
 	});
 });
 

@@ -3,10 +3,12 @@
  *
  * This worker processes jobs from the vitess-index-jobs queue:
  * - IndexBuildJob: Build a new virtual index from existing data
- * - IndexUpdateJob: Update virtual index entries after data modifications
+ *
+ * Note: Index maintenance (INSERT/UPDATE/DELETE) is handled synchronously
+ * in the Conductor, not via queue.
  */
 
-import type { IndexJob, IndexBuildJob, IndexUpdateJob, MessageBatch } from './Queue/types';
+import type { IndexJob, IndexBuildJob, MessageBatch } from './Queue/types';
 import type { Storage } from './Storage/Storage';
 import type { Topology } from './Topology/Topology';
 
@@ -45,9 +47,6 @@ async function processIndexJob(job: IndexJob, env: Env): Promise<void> {
 		case 'build_index':
 			await processBuildIndexJob(job, env);
 			break;
-		case 'index_update':
-			await processIndexUpdateJob(job, env);
-			break;
 		default:
 			throw new Error(`Unknown job type: ${(job as any).type}`);
 	}
@@ -64,7 +63,8 @@ async function processIndexJob(job: IndexJob, env: Env): Promise<void> {
  * 3. Update index status to 'ready' or 'failed'
  */
 async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void> {
-	console.log(`Building index ${job.index_name} on ${job.table_name}.${job.column_name}`);
+	const columnList = job.columns.join(', ');
+	console.log(`Building index ${job.index_name} on ${job.table_name}(${columnList})`);
 
 	const topologyId = env.TOPOLOGY.idFromName(job.database_id);
 	const topologyStub = env.TOPOLOGY.get(topologyId);
@@ -81,7 +81,7 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void>
 		console.log(`Found ${tableShards.length} shards for table ${job.table_name}`);
 
 		// 2. Collect all distinct values from all shards
-		// Map: value → Set<shard_id>
+		// Map: composite key value → Set<shard_id>
 		const valueToShards = new Map<string, Set<number>>();
 
 		for (const shard of tableShards) {
@@ -90,24 +90,37 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void>
 				const storageId = env.STORAGE.idFromName(shard.node_id);
 				const storageStub = env.STORAGE.get(storageId);
 
-				// Query for all distinct values in this shard
+				// Query for all distinct combinations of indexed columns
 				const result = await storageStub.executeQuery({
-					query: `SELECT DISTINCT ${job.column_name} FROM ${job.table_name}`,
+					query: `SELECT DISTINCT ${columnList} FROM ${job.table_name}`,
 					params: [],
 					queryType: 'SELECT',
 				});
 
-				// For each distinct value, add this shard to its shard set
+				// For each distinct combination, add this shard to its shard set
 				for (const row of result.rows) {
-					const value = row[job.column_name];
+					// Build composite key from all indexed columns
+					// For single column: just the value
+					// For multiple columns: JSON array of values
+					let keyValue: string;
 
-					// Skip NULL values - we don't index NULLs for now
-					if (value === null || value === undefined) {
-						continue;
+					if (job.columns.length === 1) {
+						const value = row[job.columns[0]];
+						// Skip NULL values
+						if (value === null || value === undefined) {
+							continue;
+						}
+						keyValue = String(value);
+					} else {
+						// Composite index - build key from all column values
+						const values = job.columns.map(col => row[col]);
+						// Skip if any value is NULL
+						if (values.some(v => v === null || v === undefined)) {
+							continue;
+						}
+						// Store as JSON array
+						keyValue = JSON.stringify(values);
 					}
-
-					// Convert value to string for storage
-					const keyValue = String(value);
 
 					if (!valueToShards.has(keyValue)) {
 						valueToShards.set(keyValue, new Set());
@@ -151,31 +164,3 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void>
 	}
 }
 
-/**
- * Update virtual index entries after a data modification
- *
- * Process:
- * 1. For INSERT: Add shard_id to index entries for new values
- * 2. For UPDATE: Remove shard_id from old value entries, add to new value entries
- * 3. For DELETE: Remove shard_id from index entries for deleted values
- */
-async function processIndexUpdateJob(job: IndexUpdateJob, env: Env): Promise<void> {
-	console.log(`Updating index for ${job.operation} on ${job.table_name} shard ${job.shard_id}`);
-
-	const topologyId = env.TOPOLOGY.idFromName(job.database_id);
-	const topologyStub = env.TOPOLOGY.get(topologyId);
-
-	try {
-		// TODO: Phase 4 implementation
-		// Get all indexes for this table
-		// For each indexed column in the job data:
-		//   - For INSERT: Add shard_id to the value's entry
-		//   - For UPDATE: Remove from old value, add to new value
-		//   - For DELETE: Remove shard_id from the value's entry
-
-		console.log(`Index update complete for ${job.table_name} (TODO: implement)`);
-	} catch (error) {
-		console.error(`Failed to update index for ${job.table_name}:`, error);
-		throw error;
-	}
-}

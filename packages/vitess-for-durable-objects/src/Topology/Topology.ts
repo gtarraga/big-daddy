@@ -35,7 +35,7 @@ export type IndexStatus = 'building' | 'ready' | 'failed' | 'rebuilding';
 export interface VirtualIndex {
 	index_name: string;
 	table_name: string;
-	column_name: string;
+	columns: string; // Stored as JSON array of column names for composite indexes
 	index_type: 'hash' | 'unique';
 	status: IndexStatus;
 	error_message: string | null;
@@ -154,7 +154,7 @@ export class Topology extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS virtual_indexes (
 				index_name TEXT PRIMARY KEY,
 				table_name TEXT NOT NULL,
-				column_name TEXT NOT NULL,
+				columns TEXT NOT NULL,
 				index_type TEXT NOT NULL CHECK(index_type IN ('hash', 'unique')),
 				status TEXT NOT NULL DEFAULT 'building' CHECK(status IN ('building', 'ready', 'failed', 'rebuilding')),
 				error_message TEXT,
@@ -368,7 +368,7 @@ export class Topology extends DurableObject<Env> {
 	async createVirtualIndex(
 		indexName: string,
 		tableName: string,
-		columnName: string,
+		columns: string[],
 		indexType: 'hash' | 'unique',
 	): Promise<{ success: boolean; error?: string }> {
 		this.ensureCreated();
@@ -394,12 +394,13 @@ export class Topology extends DurableObject<Env> {
 		const now = Date.now();
 
 		// Create index with 'building' status
+		// Store columns as JSON array
 		this.ctx.storage.sql.exec(
-			`INSERT INTO virtual_indexes (index_name, table_name, column_name, index_type, status, error_message, created_at, updated_at)
+			`INSERT INTO virtual_indexes (index_name, table_name, columns, index_type, status, error_message, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, 'building', NULL, ?, ?)`,
 			indexName,
 			tableName,
-			columnName,
+			JSON.stringify(columns),
 			indexType,
 			now,
 			now,
@@ -485,6 +486,93 @@ export class Topology extends DurableObject<Env> {
 		}
 
 		return JSON.parse(result[0].shard_ids) as number[];
+	}
+
+	/**
+	 * Add a shard ID to an index entry for a specific value
+	 * Used for synchronous index maintenance during INSERT operations
+	 *
+	 * @param indexName - Index name
+	 * @param keyValue - The indexed value
+	 * @param shardId - Shard ID to add
+	 */
+	async addShardToIndexEntry(indexName: string, keyValue: string, shardId: number): Promise<void> {
+		this.ensureCreated();
+
+		const now = Date.now();
+
+		// Get existing entry
+		const existing = await this.getIndexedShards(indexName, keyValue);
+
+		if (existing === null) {
+			// Create new entry with this shard
+			this.ctx.storage.sql.exec(
+				`INSERT INTO virtual_index_entries (index_name, key_value, shard_ids, updated_at)
+				 VALUES (?, ?, ?, ?)`,
+				indexName,
+				keyValue,
+				JSON.stringify([shardId]),
+				now,
+			);
+		} else {
+			// Add shard to existing entry if not already present
+			if (!existing.includes(shardId)) {
+				const updatedShardIds = [...existing, shardId].sort((a, b) => a - b);
+				this.ctx.storage.sql.exec(
+					`UPDATE virtual_index_entries SET shard_ids = ?, updated_at = ?
+					 WHERE index_name = ? AND key_value = ?`,
+					JSON.stringify(updatedShardIds),
+					now,
+					indexName,
+					keyValue,
+				);
+			}
+		}
+	}
+
+	/**
+	 * Remove a shard ID from an index entry for a specific value
+	 * Used for synchronous index maintenance during DELETE and UPDATE operations
+	 * Deletes the entry if it becomes empty
+	 *
+	 * @param indexName - Index name
+	 * @param keyValue - The indexed value
+	 * @param shardId - Shard ID to remove
+	 */
+	async removeShardFromIndexEntry(indexName: string, keyValue: string, shardId: number): Promise<void> {
+		this.ensureCreated();
+
+		const now = Date.now();
+
+		// Get existing entry
+		const existing = await this.getIndexedShards(indexName, keyValue);
+
+		if (existing === null || !existing.includes(shardId)) {
+			// Entry doesn't exist or shard not present - nothing to do
+			return;
+		}
+
+		// Remove shard from list
+		const updatedShardIds = existing.filter((id) => id !== shardId);
+
+		if (updatedShardIds.length === 0) {
+			// No more shards - delete the entry
+			this.ctx.storage.sql.exec(
+				`DELETE FROM virtual_index_entries WHERE index_name = ? AND key_value = ?`,
+				indexName,
+				keyValue,
+			);
+		} else {
+			// Update with remaining shards
+			this.ctx.storage.sql.exec(
+				`UPDATE virtual_index_entries SET shard_ids = ?, updated_at = ?
+				 WHERE index_name = ? AND key_value = ?`,
+				JSON.stringify(updatedShardIds),
+				now,
+				indexName,
+				keyValue,
+			);
+		}
 	}
 
 	/**
