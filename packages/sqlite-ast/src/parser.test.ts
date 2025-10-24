@@ -571,6 +571,70 @@ describe("parser", () => {
         },
       });
     });
+
+    it("should parse UPDATE with RETURNING clause", () => {
+      const sql = "UPDATE users SET name = 'John' WHERE id = 1 RETURNING *;";
+      const ast = parse(sql);
+
+      expect(ast).toEqual({
+        type: "UpdateStatement",
+        table: { type: "Identifier", name: "users" },
+        set: [
+          {
+            column: { type: "Identifier", name: "name" },
+            value: { type: "Literal", value: "John", raw: "'John'" },
+          },
+        ],
+        where: {
+          type: "BinaryExpression",
+          operator: "=",
+          left: { type: "Identifier", name: "id" },
+          right: { type: "Literal", value: 1, raw: "1" },
+        },
+        returning: [
+          {
+            type: "SelectClause",
+            expression: { type: "Identifier", name: "*" },
+          },
+        ],
+      });
+    });
+
+    it("should parse UPDATE with RETURNING specific columns", () => {
+      const sql = "UPDATE users SET name = 'John' WHERE id = 1 RETURNING id, name, email;";
+      const ast = parse(sql);
+
+      expect(ast).toEqual({
+        type: "UpdateStatement",
+        table: { type: "Identifier", name: "users" },
+        set: [
+          {
+            column: { type: "Identifier", name: "name" },
+            value: { type: "Literal", value: "John", raw: "'John'" },
+          },
+        ],
+        where: {
+          type: "BinaryExpression",
+          operator: "=",
+          left: { type: "Identifier", name: "id" },
+          right: { type: "Literal", value: 1, raw: "1" },
+        },
+        returning: [
+          {
+            type: "SelectClause",
+            expression: { type: "Identifier", name: "id" },
+          },
+          {
+            type: "SelectClause",
+            expression: { type: "Identifier", name: "name" },
+          },
+          {
+            type: "SelectClause",
+            expression: { type: "Identifier", name: "email" },
+          },
+        ],
+      });
+    });
   });
 
   describe("DELETE statements", () => {
@@ -587,6 +651,54 @@ describe("parser", () => {
           left: { type: "Identifier", name: "id" },
           right: { type: "Literal", value: 1, raw: "1" },
         },
+      });
+    });
+
+    it("should parse DELETE with RETURNING clause", () => {
+      const sql = "DELETE FROM users WHERE id = 1 RETURNING *;";
+      const ast = parse(sql);
+
+      expect(ast).toEqual({
+        type: "DeleteStatement",
+        table: { type: "Identifier", name: "users" },
+        where: {
+          type: "BinaryExpression",
+          operator: "=",
+          left: { type: "Identifier", name: "id" },
+          right: { type: "Literal", value: 1, raw: "1" },
+        },
+        returning: [
+          {
+            type: "SelectClause",
+            expression: { type: "Identifier", name: "*" },
+          },
+        ],
+      });
+    });
+
+    it("should parse DELETE with RETURNING specific columns", () => {
+      const sql = "DELETE FROM users WHERE id = 1 RETURNING id, email;";
+      const ast = parse(sql);
+
+      expect(ast).toEqual({
+        type: "DeleteStatement",
+        table: { type: "Identifier", name: "users" },
+        where: {
+          type: "BinaryExpression",
+          operator: "=",
+          left: { type: "Identifier", name: "id" },
+          right: { type: "Literal", value: 1, raw: "1" },
+        },
+        returning: [
+          {
+            type: "SelectClause",
+            expression: { type: "Identifier", name: "id" },
+          },
+          {
+            type: "SelectClause",
+            expression: { type: "Identifier", name: "email" },
+          },
+        ],
       });
     });
   });

@@ -118,5 +118,33 @@ describe("generator", () => {
       const generated = generate(ast);
       expect(generated).toBe(sql);
     });
+
+    it("should generate UPDATE with RETURNING *", () => {
+      const sql = "UPDATE users SET name = ? WHERE id = ? RETURNING *";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
+
+    it("should generate UPDATE with RETURNING specific columns", () => {
+      const sql = "UPDATE users SET name = ? WHERE id = ? RETURNING id, name, email";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
+
+    it("should generate DELETE with RETURNING *", () => {
+      const sql = "DELETE FROM users WHERE id = ? RETURNING *";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
+
+    it("should generate DELETE with RETURNING specific columns", () => {
+      const sql = "DELETE FROM users WHERE id = ? RETURNING id, email";
+      const ast = parse(sql);
+      const generated = generate(ast);
+      expect(generated).toBe(sql);
+    });
   });
 });

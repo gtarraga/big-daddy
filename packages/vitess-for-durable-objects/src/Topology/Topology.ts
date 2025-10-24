@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import type { Statement, UpdateStatement, DeleteStatement, SelectStatement } from '@databases/sqlite-ast';
 
 // Type definitions for topology data structures
 export interface StorageNode {
@@ -79,6 +80,17 @@ export interface TopologyUpdates {
 		update?: TableMetadataUpdate[];
 		remove?: string[];
 	};
+}
+
+export interface QueryPlanData {
+	// Table metadata
+	tableMetadata: TableMetadata;
+
+	// Shards to query (already determined using indexes if possible)
+	shardsToQuery: Array<{ table_name: string; shard_id: number; node_id: string }>;
+
+	// Ready virtual indexes for this table (for index maintenance)
+	virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>;
 }
 
 /** Topology Durable Object for managing cluster topology */
@@ -261,6 +273,456 @@ export class Topology extends DurableObject<Env> {
 			virtual_indexes,
 			virtual_index_entries,
 		};
+	}
+
+	/**
+	 * Get all topology data needed for query planning in a single call
+	 * This eliminates multiple round-trips to the Topology DO
+	 *
+	 * This method determines shard targets using indexes if possible, all within the DO
+	 *
+	 * @param tableName - Table name being queried
+	 * @param statement - Parsed SQL statement
+	 * @param params - Query parameters
+	 * @returns Complete query plan with shard targets determined
+	 */
+	async getQueryPlanData(tableName: string, statement: Statement, params: any[]): Promise<QueryPlanData> {
+		this.ensureCreated();
+
+		// Fetch ALL topology data for this table in a single pass
+		const tables = this.ctx.storage.sql.exec(
+			`SELECT * FROM tables WHERE table_name = ?`,
+			tableName
+		).toArray() as unknown as TableMetadata[];
+
+		const tableMetadata = tables[0];
+		if (!tableMetadata) {
+			throw new Error(`Table '${tableName}' not found in topology`);
+		}
+
+		const tableShards = this.ctx.storage.sql.exec(
+			`SELECT * FROM table_shards WHERE table_name = ? ORDER BY shard_id`,
+			tableName
+		).toArray() as unknown as TableShard[];
+
+		if (tableShards.length === 0) {
+			throw new Error(`No shards found for table '${tableName}'`);
+		}
+
+		// Only get ready indexes
+		const virtual_indexes = this.ctx.storage.sql.exec(
+			`SELECT index_name, columns, index_type FROM virtual_indexes WHERE table_name = ? AND status = 'ready'`,
+			tableName
+		).toArray() as unknown as Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>;
+
+		// Determine which shards to query (using indexes if possible)
+		const shardsToQuery = await this.determineShardTargets(
+			statement,
+			tableMetadata,
+			tableShards,
+			virtual_indexes,
+			params
+		);
+
+		// For INSERT: Handle index maintenance NOW (before query executes)
+		// We know the target shard and have all the data we need
+		if (statement.type === 'InsertStatement' && virtual_indexes.length > 0) {
+			await this.maintainIndexesForInsert(
+				statement as any,
+				virtual_indexes,
+				shardsToQuery[0], // INSERT always goes to single shard
+				params
+			);
+		}
+
+		return {
+			tableMetadata,
+			shardsToQuery,
+			virtualIndexes: virtual_indexes,
+		};
+	}
+
+	/**
+	 * Determine which shards to query based on the statement and available indexes
+	 * This is called internally by getQueryPlanData
+	 */
+	private async determineShardTargets(
+		statement: Statement,
+		tableMetadata: TableMetadata,
+		tableShards: TableShard[],
+		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+		params: any[]
+	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }>> {
+		// For INSERT, route to specific shard based on shard key value
+		if (statement.type === 'InsertStatement') {
+			try {
+				const shardId = this.getShardIdForInsert(statement as any, tableMetadata, tableShards.length, params);
+				const shard = tableShards.find((s) => s.shard_id === shardId);
+				if (!shard) {
+					throw new Error(`Shard ${shardId} not found for table '${tableMetadata.table_name}'`);
+				}
+				return [shard];
+			} catch (error) {
+				// If we can't determine shard (e.g., bulk inserts), use first shard as fallback
+				// This matches the Conductor's behavior
+				return [tableShards[0]];
+			}
+		}
+
+		// For SELECT/UPDATE/DELETE, check WHERE clause
+		const where = (statement as any).where;
+
+		if (where) {
+			// Check if it filters on shard key
+			const shardId = this.getShardIdFromWhere(where, tableMetadata, tableShards.length, params);
+			if (shardId !== null) {
+				const shard = tableShards.find((s) => s.shard_id === shardId);
+				if (!shard) {
+					throw new Error(`Shard ${shardId} not found for table '${tableMetadata.table_name}'`);
+				}
+				return [shard];
+			}
+
+			// Shard key not used - check if we can use a virtual index
+			const indexedShards = await this.getShardsFromIndexedWhere(where, tableMetadata.table_name, tableShards, virtualIndexes, params);
+			if (indexedShards !== null) {
+				return indexedShards;
+			}
+		}
+
+		// No WHERE clause or couldn't optimize - query all shards
+		return tableShards;
+	}
+
+	/**
+	 * Calculate shard ID for INSERT based on shard key value
+	 */
+	private getShardIdForInsert(statement: any, tableMetadata: TableMetadata, numShards: number, params: any[]): number {
+		// Find the shard key column in the INSERT
+		const columnIndex = statement.columns?.findIndex((col: any) => col.name === tableMetadata.shard_key);
+
+		if (columnIndex === undefined || columnIndex === -1) {
+			throw new Error(`Shard key '${tableMetadata.shard_key}' not found in INSERT statement`);
+		}
+
+		// Get the value for the shard key
+		// statement.values[0] is an array of expressions, one for each column
+		if (statement.values.length === 0) {
+			throw new Error('INSERT statement has no values');
+		}
+
+		const valueExpression = statement.values[0][columnIndex];
+		const value = this.extractValueFromExpression(valueExpression, params);
+
+		if (value === null || value === undefined) {
+			throw new Error(`Could not resolve shard key value from parameters`);
+		}
+
+		// Hash the value to get shard ID
+		return this.hashToShardId(String(value), numShards);
+	}
+
+	/**
+	 * Try to determine shard ID from WHERE clause
+	 */
+	private getShardIdFromWhere(where: any, tableMetadata: TableMetadata, numShards: number, params: any[]): number | null {
+		if (where.type === 'BinaryExpression' && where.operator === '=') {
+			let columnName: string | null = null;
+			let valueExpression: any | null = null;
+
+			if (where.left.type === 'Identifier') {
+				columnName = where.left.name;
+				valueExpression = where.right;
+			} else if (where.right.type === 'Identifier') {
+				columnName = where.right.name;
+				valueExpression = where.left;
+			}
+
+			if (columnName === tableMetadata.shard_key && valueExpression) {
+				const value = this.extractValueFromExpression(valueExpression, params);
+				if (value !== null && value !== undefined) {
+					return this.hashToShardId(String(value), numShards);
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Check if WHERE clause can use a virtual index to reduce shard fan-out
+	 */
+	private async getShardsFromIndexedWhere(
+		where: any,
+		tableName: string,
+		tableShards: TableShard[],
+		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
+		params: any[]
+	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }> | null> {
+		// Try to match composite index from AND conditions
+		if (where.type === 'BinaryExpression' && where.operator === 'AND') {
+			const columnValues = this.extractColumnValuesFromAnd(where, params);
+
+			if (columnValues.size > 0) {
+				const index = virtualIndexes.find((idx) => {
+					const indexColumns = JSON.parse(idx.columns);
+
+					if (indexColumns.length === 1) {
+						return columnValues.has(indexColumns[0]);
+					}
+
+					// Multi-column index - check leftmost prefix
+					let matchCount = 0;
+					for (let i = 0; i < indexColumns.length; i++) {
+						if (columnValues.has(indexColumns[i])) {
+							matchCount++;
+						} else {
+							break;
+						}
+					}
+
+					return matchCount > 0 && matchCount === Math.min(columnValues.size, indexColumns.length);
+				});
+
+				if (index) {
+					const indexColumns = JSON.parse(index.columns);
+					let keyValue: string;
+
+					if (indexColumns.length === 1) {
+						const value = columnValues.get(indexColumns[0])!;
+						if (value === null || value === undefined) {
+							return null;
+						}
+						keyValue = String(value);
+					} else {
+						const values: any[] = [];
+						for (const col of indexColumns) {
+							const value = columnValues.get(col);
+							if (value === undefined) break;
+							if (value === null) return null;
+							values.push(value);
+						}
+						if (values.length === 0) return null;
+						keyValue = values.length === 1 ? String(values[0]) : JSON.stringify(values);
+					}
+
+					const shardIds = await this.getIndexedShards(index.index_name, keyValue);
+					if (shardIds === null || shardIds.length === 0) {
+						return [];
+					}
+
+					return tableShards.filter((s) => shardIds.includes(s.shard_id));
+				}
+			}
+		}
+
+		// Try to match single equality condition
+		if (where.type === 'BinaryExpression' && where.operator === '=') {
+			let columnName: string | null = null;
+			let valueExpression: any | null = null;
+
+			if (where.left.type === 'Identifier') {
+				columnName = where.left.name;
+				valueExpression = where.right;
+			} else if (where.right.type === 'Identifier') {
+				columnName = where.right.name;
+				valueExpression = where.left;
+			}
+
+			if (!columnName || !valueExpression) {
+				return null;
+			}
+
+			const index = virtualIndexes.find((idx) => {
+				const columns = JSON.parse(idx.columns);
+				return columns.length === 1 && columns[0] === columnName;
+			});
+
+			if (!index) {
+				return null;
+			}
+
+			const value = this.extractValueFromExpression(valueExpression, params);
+			if (value === null || value === undefined) {
+				return null;
+			}
+
+			const keyValue = String(value);
+			const shardIds = await this.getIndexedShards(index.index_name, keyValue);
+
+			if (shardIds === null || shardIds.length === 0) {
+				return [];
+			}
+
+			return tableShards.filter((s) => shardIds.includes(s.shard_id));
+		}
+
+		// Try to match IN query
+		if (where.type === 'InExpression') {
+			const columnName = where.expression.type === 'Identifier' ? where.expression.name : null;
+
+			if (!columnName) {
+				return null;
+			}
+
+			const index = virtualIndexes.find((idx) => {
+				const columns = JSON.parse(idx.columns);
+				return columns.length === 1 && columns[0] === columnName;
+			});
+
+			if (!index) {
+				return null;
+			}
+
+			const values: any[] = [];
+			for (const item of where.values) {
+				const value = this.extractValueFromExpression(item, params);
+				if (value !== null && value !== undefined) {
+					values.push(value);
+				}
+			}
+
+			if (values.length === 0) {
+				return null;
+			}
+
+			const allShardIds = new Set<number>();
+			for (const value of values) {
+				const keyValue = String(value);
+				const shardIds = await this.getIndexedShards(index.index_name, keyValue);
+
+				if (shardIds && shardIds.length > 0) {
+					shardIds.forEach(id => allShardIds.add(id));
+				}
+			}
+
+			if (allShardIds.size === 0) {
+				return [];
+			}
+
+			return tableShards.filter((s) => allShardIds.has(s.shard_id));
+		}
+
+		return null;
+	}
+
+	/**
+	 * Extract column-value pairs from AND conditions
+	 */
+	private extractColumnValuesFromAnd(where: any, params: any[]): Map<string, any> {
+		const columnValues = new Map<string, any>();
+
+		const extract = (node: any) => {
+			if (node.type === 'BinaryExpression') {
+				if (node.operator === 'AND') {
+					extract(node.left);
+					extract(node.right);
+				} else if (node.operator === '=') {
+					let columnName: string | null = null;
+					let valueExpression: any | null = null;
+
+					if (node.left.type === 'Identifier') {
+						columnName = node.left.name;
+						valueExpression = node.right;
+					} else if (node.right.type === 'Identifier') {
+						columnName = node.right.name;
+						valueExpression = node.left;
+					}
+
+					if (columnName && valueExpression) {
+						const value = this.extractValueFromExpression(valueExpression, params);
+						columnValues.set(columnName, value);
+					}
+				}
+			}
+		};
+
+		extract(where);
+		return columnValues;
+	}
+
+	/**
+	 * Extract value from an expression node
+	 */
+	private extractValueFromExpression(expression: any, params: any[]): any {
+		if (!expression) {
+			return null;
+		}
+		if (expression.type === 'Literal') {
+			return expression.value;
+		} else if (expression.type === 'Placeholder') {
+			return params[expression.parameterIndex];
+		}
+		return null;
+	}
+
+	/**
+	 * Hash a value to a shard ID
+	 */
+	private hashToShardId(value: string, numShards: number): number {
+		let hash = 0;
+		for (let i = 0; i < value.length; i++) {
+			hash = ((hash << 5) - hash) + value.charCodeAt(i);
+			hash = hash & hash;
+		}
+		return Math.abs(hash) % numShards;
+	}
+
+	/**
+	 * Maintain indexes for INSERT operation
+	 * Called from getQueryPlanData before the INSERT executes
+	 */
+	private async maintainIndexesForInsert(
+		statement: any,
+		indexes: Array<{ index_name: string; columns: string }>,
+		shard: { table_name: string; shard_id: number; node_id: string },
+		params: any[]
+	): Promise<void> {
+		// Extract values from the INSERT statement
+		if (!statement.columns || statement.values.length === 0) {
+			return;
+		}
+
+		const row = statement.values[0]; // Only handle single-row inserts for now
+
+		// For each index, extract the value(s) and update the index entry
+		for (const index of indexes) {
+			const indexColumns = JSON.parse(index.columns);
+
+			// Build composite key from all indexed columns
+			const values: any[] = [];
+			let hasNull = false;
+
+			for (const colName of indexColumns) {
+				const columnIndex = statement.columns.findIndex((col: any) => col.name === colName);
+				if (columnIndex === -1) {
+					// This column is not in the INSERT - skip this index
+					hasNull = true;
+					break;
+				}
+
+				const valueExpression = row[columnIndex];
+				const value = this.extractValueFromExpression(valueExpression, params);
+
+				if (value === null || value === undefined) {
+					// NULL values are not indexed
+					hasNull = true;
+					break;
+				}
+
+				values.push(value);
+			}
+
+			if (hasNull || values.length !== indexColumns.length) {
+				continue;
+			}
+
+			// Build the key value
+			const keyValue = indexColumns.length === 1 ? String(values[0]) : JSON.stringify(values);
+
+			// Add this shard to the index entry for this value
+			await this.addShardToIndexEntry(index.index_name, keyValue, shard.shard_id);
+		}
 	}
 
 	/**
@@ -587,6 +1049,52 @@ export class Topology extends DurableObject<Env> {
 		this.ctx.storage.sql.exec(`DELETE FROM virtual_indexes WHERE index_name = ?`, indexName);
 
 		return { success: true };
+	}
+
+	/**
+	 * Get all index entries that include a specific shard
+	 * Used by async index maintenance to rebuild index state
+	 */
+	async getIndexEntriesForShard(indexName: string, shardId: number): Promise<Array<{ key_value: string }>> {
+		this.ensureCreated();
+
+		const entries = this.ctx.storage.sql
+			.exec(
+				`SELECT key_value, shard_ids FROM virtual_index_entries
+		     WHERE index_name = ?`,
+				indexName
+			)
+			.toArray() as Array<{ key_value: string; shard_ids: string }>;
+
+		return entries
+			.filter((entry) => {
+				const shardIds = JSON.parse(entry.shard_ids);
+				return shardIds.includes(shardId);
+			})
+			.map((entry) => ({ key_value: entry.key_value }));
+	}
+
+	/**
+	 * Apply a batch of index changes in a single call
+	 * Used by async index maintenance queue consumer
+	 */
+	async batchMaintainIndexes(
+		changes: Array<{
+			operation: 'add' | 'remove';
+			index_name: string;
+			key_value: string;
+			shard_id: number;
+		}>
+	): Promise<void> {
+		this.ensureCreated();
+
+		for (const change of changes) {
+			if (change.operation === 'add') {
+				await this.addShardToIndexEntry(change.index_name, change.key_value, change.shard_id);
+			} else {
+				await this.removeShardFromIndexEntry(change.index_name, change.key_value, change.shard_id);
+			}
+		}
 	}
 
 	/**

@@ -121,12 +121,14 @@ export interface UpdateStatement extends BaseNode {
   table: Identifier
   set: { column: Identifier; value: Expression }[]
   where?: Expression
+  returning?: SelectClause[]
 }
 
 export interface DeleteStatement extends BaseNode {
   type: 'DeleteStatement'
   table: Identifier
   where?: Expression
+  returning?: SelectClause[]
 }
 
 export interface ColumnDefinition extends BaseNode {

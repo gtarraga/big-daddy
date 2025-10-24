@@ -37,43 +37,14 @@ describe('Virtual Index End-to-End', () => {
 		// 3. Create index (this enqueues a job)
 		await conductor.sql`CREATE INDEX idx_email ON users(email)`;
 
-		// Verify index was created with 'building' status
+		// 4. Verify index was built successfully
+		// Note: In test environment, queue processing happens automatically in enqueueIndexJob(),
+		// so the index is already 'ready' by this point
 		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
-		let topology = await topologyStub.getTopology();
+		const topology = await topologyStub.getTopology();
 
 		expect(topology.virtual_indexes).toHaveLength(1);
 		expect(topology.virtual_indexes[0].index_name).toBe('idx_email');
-		expect(topology.virtual_indexes[0].status).toBe('building');
-		expect(topology.virtual_index_entries).toHaveLength(0); // No entries yet
-
-		// 4. Manually trigger queue consumer to process the build job
-		// In production, this happens automatically, but in tests we need to trigger it
-		const buildJob: IndexBuildJob = {
-			type: 'build_index',
-			database_id: dbId,
-			table_name: 'users',
-			columns: ['email'],
-			index_name: 'idx_email',
-			created_at: new Date().toISOString(),
-		};
-
-		await queueHandler(
-			{
-				queue: 'vitess-index-jobs',
-				messages: [
-					{
-						id: 'test-msg-1',
-						timestamp: new Date(),
-						body: buildJob,
-						attempts: 1,
-					},
-				],
-			},
-			env,
-		);
-
-		// 5. Verify index was built successfully
-		topology = await topologyStub.getTopology();
 
 		expect(topology.virtual_indexes[0].status).toBe('ready');
 		expect(topology.virtual_indexes[0].error_message).toBeNull();

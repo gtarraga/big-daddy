@@ -148,6 +148,10 @@ function generateUpdate(stmt: UpdateStatement): string {
     sql += " WHERE " + generateExpression(stmt.where);
   }
 
+  if (stmt.returning && stmt.returning.length > 0) {
+    sql += " RETURNING " + stmt.returning.map(generateSelectClause).join(", ");
+  }
+
   return sql;
 }
 
@@ -156,6 +160,10 @@ function generateDelete(stmt: DeleteStatement): string {
 
   if (stmt.where) {
     sql += " WHERE " + generateExpression(stmt.where);
+  }
+
+  if (stmt.returning && stmt.returning.length > 0) {
+    sql += " RETURNING " + stmt.returning.map(generateSelectClause).join(", ");
   }
 
   return sql;

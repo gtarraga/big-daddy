@@ -3,12 +3,10 @@
  *
  * This worker processes jobs from the vitess-index-jobs queue:
  * - IndexBuildJob: Build a new virtual index from existing data
- *
- * Note: Index maintenance (INSERT/UPDATE/DELETE) is handled synchronously
- * in the Conductor, not via queue.
+ * - IndexMaintenanceJob: Maintain indexes after UPDATE/DELETE operations
  */
 
-import type { IndexJob, IndexBuildJob, MessageBatch } from './Queue/types';
+import type { IndexJob, IndexBuildJob, IndexMaintenanceJob, MessageBatch } from './Queue/types';
 import type { Storage } from './Storage/Storage';
 import type { Topology } from './Topology/Topology';
 
@@ -46,6 +44,9 @@ async function processIndexJob(job: IndexJob, env: Env): Promise<void> {
 	switch (job.type) {
 		case 'build_index':
 			await processBuildIndexJob(job, env);
+			break;
+		case 'maintain_index':
+			await processIndexMaintenanceJob(job, env);
 			break;
 		default:
 			throw new Error(`Unknown job type: ${(job as any).type}`);
@@ -162,5 +163,132 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void>
 
 		throw error;
 	}
+}
+
+/**
+ * Maintain virtual indexes after UPDATE/DELETE operations
+ *
+ * Process:
+ * 1. For each affected shard, read current data
+ * 2. Compute what index entries should exist based on current state
+ * 3. Compare with topology's current state
+ * 4. Apply changes in a single batched call
+ */
+async function processIndexMaintenanceJob(job: IndexMaintenanceJob, env: Env): Promise<void> {
+	console.log(`Maintaining indexes for ${job.operation} on ${job.table_name}, shards: ${job.shard_ids.join(',')}`);
+
+	const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(job.database_id));
+	const topology = await topologyStub.getTopology();
+
+	// Get index definitions
+	const indexes = topology.virtual_indexes.filter(
+		(idx) => job.affected_indexes.includes(idx.index_name) && idx.status === 'ready'
+	);
+
+	if (indexes.length === 0) {
+		console.log('No ready indexes to maintain');
+		return;
+	}
+
+	// Collect all index changes across all shards
+	const allChanges: Array<{
+		operation: 'add' | 'remove';
+		index_name: string;
+		key_value: string;
+		shard_id: number;
+	}> = [];
+
+	// Process each affected shard
+	for (const shardId of job.shard_ids) {
+		const shard = topology.table_shards.find((s) => s.table_name === job.table_name && s.shard_id === shardId);
+		if (!shard) {
+			console.warn(`Shard ${shardId} not found for table ${job.table_name}`);
+			continue;
+		}
+
+		const storageStub = env.STORAGE.get(env.STORAGE.idFromName(shard.node_id));
+
+		// For each index, rebuild entries for this shard
+		for (const index of indexes) {
+			const indexColumns = JSON.parse(index.columns);
+
+			// Read current state from shard
+			const columnList = indexColumns.join(', ');
+			const query = `SELECT ${columnList} FROM ${job.table_name}`;
+
+			try {
+				const result = await storageStub.executeQuery({
+					query,
+					params: [],
+					queryType: 'SELECT',
+				});
+
+				// Build set of values that SHOULD include this shard
+				const shouldExist = new Set<string>();
+				for (const row of result.rows) {
+					const keyValue = computeIndexKey(row, indexColumns);
+					if (keyValue) {
+						shouldExist.add(keyValue);
+					}
+				}
+
+				// Get current state from Topology
+				const currentEntries = await topologyStub.getIndexEntriesForShard(index.index_name, shardId);
+				const currentlyExists = new Set(currentEntries.map((e) => e.key_value));
+
+				// Compute changes
+				// Add shard to entries where it should exist but doesn't
+				for (const keyValue of shouldExist) {
+					if (!currentlyExists.has(keyValue)) {
+						allChanges.push({
+							operation: 'add',
+							index_name: index.index_name,
+							key_value: keyValue,
+							shard_id: shardId,
+						});
+					}
+				}
+
+				// Remove shard from entries where it shouldn't exist but does
+				for (const keyValue of currentlyExists) {
+					if (!shouldExist.has(keyValue)) {
+						allChanges.push({
+							operation: 'remove',
+							index_name: index.index_name,
+							key_value: keyValue,
+							shard_id: shardId,
+						});
+					}
+				}
+			} catch (error) {
+				console.error(`Error querying shard ${shardId}:`, error);
+				throw error;
+			}
+		}
+	}
+
+	// Apply all changes in a single Topology call
+	if (allChanges.length > 0) {
+		await topologyStub.batchMaintainIndexes(allChanges);
+		console.log(`Applied ${allChanges.length} index changes for ${job.table_name}`);
+	} else {
+		console.log(`No index changes needed for ${job.table_name}`);
+	}
+}
+
+/**
+ * Compute index key from a row and column list
+ * Returns null if any column value is NULL (NULL values are not indexed)
+ */
+function computeIndexKey(row: Record<string, any>, columns: string[]): string | null {
+	const values = [];
+	for (const col of columns) {
+		const val = row[col];
+		if (val === null || val === undefined) {
+			return null; // Don't index NULL values
+		}
+		values.push(val);
+	}
+	return columns.length === 1 ? String(values[0]) : JSON.stringify(values);
 }
 

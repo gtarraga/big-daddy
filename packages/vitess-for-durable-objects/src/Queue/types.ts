@@ -4,9 +4,7 @@
 
 /**
  * Job to build a virtual index from existing data
- *
- * Note: Index maintenance (INSERT/UPDATE/DELETE) is handled synchronously
- * in the Conductor, not via queue. Only initial index building uses the queue.
+ * This is enqueued when CREATE INDEX is executed
  */
 export interface IndexBuildJob {
 	type: 'build_index';
@@ -18,17 +16,31 @@ export interface IndexBuildJob {
 }
 
 /**
- * Union type of all possible index jobs
- * Currently only IndexBuildJob - index updates are synchronous
+ * Job to maintain virtual indexes after UPDATE/DELETE operations
+ * This is enqueued after writes complete to asynchronously update indexes
  */
-export type IndexJob = IndexBuildJob;
+export interface IndexMaintenanceJob {
+	type: 'maintain_index';
+	database_id: string;
+	table_name: string;
+	operation: 'UPDATE' | 'DELETE';
+	shard_ids: number[];           // Shards that were affected by the operation
+	affected_indexes: string[];    // Index names that need updating
+	updated_columns?: string[];    // For UPDATE: which columns changed
+	created_at: string;
+}
+
+/**
+ * Union type of all possible index jobs
+ */
+export type IndexJob = IndexBuildJob | IndexMaintenanceJob;
 
 /**
  * Queue message batch from Cloudflare
  */
 export interface MessageBatch<T = IndexJob> {
 	queue: string;
-	messages: Array<Message<T>>;
+	messages: readonly Message<T>[];
 }
 
 /**

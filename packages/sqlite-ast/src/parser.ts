@@ -282,6 +282,12 @@ class Parser {
       where = this.parseExpression();
     }
 
+    let returning: SelectClause[] | undefined;
+    if (this.match("RETURNING")) {
+      this.advance();
+      returning = this.parseSelectClauses();
+    }
+
     // Skip trailing semicolon if present
     this.skipSemicolon();
 
@@ -289,7 +295,8 @@ class Parser {
       type: "UpdateStatement",
       table,
       set,
-      ...(where && { where })
+      ...(where && { where }),
+      ...(returning && { returning })
     };
   }
 
@@ -305,13 +312,20 @@ class Parser {
       where = this.parseExpression();
     }
 
+    let returning: SelectClause[] | undefined;
+    if (this.match("RETURNING")) {
+      this.advance();
+      returning = this.parseSelectClauses();
+    }
+
     // Skip trailing semicolon if present
     this.skipSemicolon();
 
     return {
       type: "DeleteStatement",
       table,
-      ...(where && { where })
+      ...(where && { where }),
+      ...(returning && { returning })
     };
   }
 

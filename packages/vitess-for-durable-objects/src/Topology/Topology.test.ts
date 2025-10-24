@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
+import { parse } from '@databases/sqlite-ast';
 
 describe('Topology Durable Object', () => {
 	describe('create', () => {
@@ -651,6 +652,518 @@ describe('Topology Durable Object', () => {
 			expect(JSON.parse(user0!.shard_ids)).toEqual([0]);
 			expect(JSON.parse(user50!.shard_ids)).toEqual([0]);
 			expect(JSON.parse(user99!.shard_ids)).toEqual([1]);
+		});
+	});
+
+	describe('getQueryPlanData', () => {
+		describe('SELECT queries', () => {
+			it('should return all shards when WHERE clause does not match shard key or indexes', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-select-1');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				const statement = parse('SELECT * FROM users WHERE name = ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['Alice']);
+
+				expect(planData.tableMetadata.table_name).toBe('users');
+				expect(planData.shardsToQuery).toHaveLength(3); // All shards
+				expect(planData.virtualIndexes).toHaveLength(0);
+			});
+
+			it('should return single shard when WHERE clause matches shard key', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-select-2');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				const statement = parse('SELECT * FROM users WHERE id = ?');
+				const planData = await stub.getQueryPlanData('users', statement, [123]);
+
+				expect(planData.tableMetadata.table_name).toBe('users');
+				expect(planData.shardsToQuery).toHaveLength(1); // Single shard
+				expect(planData.shardsToQuery[0].shard_id).toBeGreaterThanOrEqual(0);
+				expect(planData.shardsToQuery[0].shard_id).toBeLessThan(3);
+			});
+
+			it('should use virtual index to reduce shard fan-out', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-select-3');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				// Create and populate virtual index
+				await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
+				await stub.updateIndexStatus('idx_email', 'ready');
+				await stub.batchUpsertIndexEntries('idx_email', [{ keyValue: 'alice@example.com', shardIds: [1] }]);
+
+				const statement = parse('SELECT * FROM users WHERE email = ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['alice@example.com']);
+
+				expect(planData.tableMetadata.table_name).toBe('users');
+				expect(planData.shardsToQuery).toHaveLength(1); // Reduced to single shard via index
+				expect(planData.shardsToQuery[0].shard_id).toBe(1);
+				expect(planData.virtualIndexes).toHaveLength(1);
+				expect(planData.virtualIndexes[0].index_name).toBe('idx_email');
+			});
+
+			it('should return empty array when indexed value does not exist', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-select-4');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				// Create index but don't add any entries
+				await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
+				await stub.updateIndexStatus('idx_email', 'ready');
+
+				const statement = parse('SELECT * FROM users WHERE email = ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['nonexistent@example.com']);
+
+				expect(planData.shardsToQuery).toHaveLength(0); // No shards contain this value
+			});
+
+			it('should use composite index for AND queries', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-select-5');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				// Create composite index
+				await stub.createVirtualIndex('idx_country_city', 'users', ['country', 'city'], 'hash');
+				await stub.updateIndexStatus('idx_country_city', 'ready');
+				await stub.batchUpsertIndexEntries('idx_country_city', [{ keyValue: JSON.stringify(['USA', 'NYC']), shardIds: [0, 2] }]);
+
+				const statement = parse('SELECT * FROM users WHERE country = ? AND city = ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['USA', 'NYC']);
+
+				expect(planData.shardsToQuery).toHaveLength(2); // Reduced via composite index
+				expect(planData.shardsToQuery.map((s) => s.shard_id).sort()).toEqual([0, 2]);
+			});
+		});
+
+		describe('UPDATE queries', () => {
+			it('should return all shards when WHERE clause does not match shard key or indexes', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-update-1');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				const statement = parse('UPDATE users SET name = ? WHERE age > ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['Bob', 18]);
+
+				expect(planData.tableMetadata.table_name).toBe('users');
+				expect(planData.shardsToQuery).toHaveLength(3); // All shards
+			});
+
+			it('should return single shard when WHERE clause matches shard key', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-update-2');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				const statement = parse('UPDATE users SET name = ? WHERE id = ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['Bob', 456]);
+
+				expect(planData.shardsToQuery).toHaveLength(1); // Single shard
+			});
+
+			it('should use virtual index to reduce shard fan-out', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-update-3');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				// Create and populate virtual index
+				await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
+				await stub.updateIndexStatus('idx_email', 'ready');
+				await stub.batchUpsertIndexEntries('idx_email', [{ keyValue: 'bob@example.com', shardIds: [0] }]);
+
+				const statement = parse('UPDATE users SET name = ? WHERE email = ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['Bob', 'bob@example.com']);
+
+				expect(planData.shardsToQuery).toHaveLength(1); // Reduced via index
+				expect(planData.shardsToQuery[0].shard_id).toBe(0);
+				expect(planData.virtualIndexes).toHaveLength(1);
+			});
+
+			it('should include virtual indexes in plan data for index maintenance', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-update-4');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(2);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 2,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				// Create multiple indexes
+				await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
+				await stub.createVirtualIndex('idx_country', 'users', ['country'], 'hash');
+				await stub.updateIndexStatus('idx_email', 'ready');
+				await stub.updateIndexStatus('idx_country', 'ready');
+
+				const statement = parse('UPDATE users SET name = ? WHERE id = ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['Alice', 123]);
+
+				// Both ready indexes should be included for index maintenance
+				expect(planData.virtualIndexes).toHaveLength(2);
+				const indexNames = planData.virtualIndexes.map((idx) => idx.index_name).sort();
+				expect(indexNames).toEqual(['idx_country', 'idx_email']);
+			});
+		});
+
+		describe('DELETE queries', () => {
+			it('should return all shards when WHERE clause does not match shard key or indexes', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-delete-1');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				const statement = parse('DELETE FROM users WHERE status = ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['inactive']);
+
+				expect(planData.tableMetadata.table_name).toBe('users');
+				expect(planData.shardsToQuery).toHaveLength(3); // All shards
+			});
+
+			it('should return single shard when WHERE clause matches shard key', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-delete-2');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				const statement = parse('DELETE FROM users WHERE id = ?');
+				const planData = await stub.getQueryPlanData('users', statement, [789]);
+
+				expect(planData.shardsToQuery).toHaveLength(1); // Single shard
+			});
+
+			it('should use virtual index to reduce shard fan-out', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-delete-3');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				// Create and populate virtual index
+				await stub.createVirtualIndex('idx_email', 'users', ['email'], 'hash');
+				await stub.updateIndexStatus('idx_email', 'ready');
+				await stub.batchUpsertIndexEntries('idx_email', [{ keyValue: 'charlie@example.com', shardIds: [2] }]);
+
+				const statement = parse('DELETE FROM users WHERE email = ?');
+				const planData = await stub.getQueryPlanData('users', statement, ['charlie@example.com']);
+
+				expect(planData.shardsToQuery).toHaveLength(1); // Reduced via index
+				expect(planData.shardsToQuery[0].shard_id).toBe(2);
+				expect(planData.virtualIndexes).toHaveLength(1);
+			});
+
+			it('should support IN queries with virtual index', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-delete-4');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(4);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 4,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				// Create and populate virtual index
+				await stub.createVirtualIndex('idx_country', 'users', ['country'], 'hash');
+				await stub.updateIndexStatus('idx_country', 'ready');
+				await stub.batchUpsertIndexEntries('idx_country', [
+					{ keyValue: 'USA', shardIds: [0, 2] },
+					{ keyValue: 'UK', shardIds: [1] },
+					{ keyValue: 'Canada', shardIds: [3] },
+				]);
+
+				const statement = parse("DELETE FROM users WHERE country IN ('USA', 'UK')");
+				const planData = await stub.getQueryPlanData('users', statement, []);
+
+				// Should target only shards 0, 1, 2 (not 3 which has Canada)
+				expect(planData.shardsToQuery).toHaveLength(3);
+				const shardIds = planData.shardsToQuery.map((s) => s.shard_id).sort();
+				expect(shardIds).toEqual([0, 1, 2]);
+			});
+		});
+
+		describe('INSERT queries', () => {
+			it('should return single shard based on shard key hash', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-insert-1');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(3);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 3,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				const statement = parse('INSERT INTO users (id, name, email) VALUES (?, ?, ?)');
+				const planData = await stub.getQueryPlanData('users', statement, [123, 'Alice', 'alice@example.com']);
+
+				expect(planData.shardsToQuery).toHaveLength(1); // Single shard
+				expect(planData.shardsToQuery[0].shard_id).toBeGreaterThanOrEqual(0);
+				expect(planData.shardsToQuery[0].shard_id).toBeLessThan(3);
+			});
+
+			it('should handle INSERT with different shard key values', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-insert-2');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(4);
+				await stub.updateTopology({
+					tables: {
+						add: [
+							{
+								table_name: 'users',
+								primary_key: 'id',
+								primary_key_type: 'INTEGER',
+								shard_strategy: 'hash',
+								shard_key: 'id',
+								num_shards: 4,
+								block_size: 500,
+							},
+						],
+					},
+				});
+
+				const statement1 = parse('INSERT INTO users (id, name) VALUES (?, ?)');
+				const planData1 = await stub.getQueryPlanData('users', statement1, [100, 'User100']);
+
+				const statement2 = parse('INSERT INTO users (id, name) VALUES (?, ?)');
+				const planData2 = await stub.getQueryPlanData('users', statement2, [200, 'User200']);
+
+				// Both should return single shard
+				expect(planData1.shardsToQuery).toHaveLength(1);
+				expect(planData2.shardsToQuery).toHaveLength(1);
+
+				// Shards might be the same or different depending on hash
+				// Just verify they're valid shard IDs
+				expect(planData1.shardsToQuery[0].shard_id).toBeGreaterThanOrEqual(0);
+				expect(planData1.shardsToQuery[0].shard_id).toBeLessThan(4);
+				expect(planData2.shardsToQuery[0].shard_id).toBeGreaterThanOrEqual(0);
+				expect(planData2.shardsToQuery[0].shard_id).toBeLessThan(4);
+			});
+		});
+
+		describe('Error handling', () => {
+			it('should throw error if table does not exist', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-error-1');
+				const stub = env.TOPOLOGY.get(id);
+
+				await stub.create(2);
+
+				const statement = parse('SELECT * FROM nonexistent WHERE id = ?');
+				await expect(stub.getQueryPlanData('nonexistent', statement, [123])).rejects.toThrow(
+					"Table 'nonexistent' not found in topology"
+				);
+			});
+
+			it('should throw error if topology not created', async () => {
+				const id = env.TOPOLOGY.idFromName('test-qpd-error-2');
+				const stub = env.TOPOLOGY.get(id);
+
+				const statement = parse('SELECT * FROM users WHERE id = ?');
+				await expect(stub.getQueryPlanData('users', statement, [123])).rejects.toThrow('Topology not created');
+			});
 		});
 	});
 });

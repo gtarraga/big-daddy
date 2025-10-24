@@ -1,55 +1,140 @@
 /**
- * Welcome to Cloudflare Workers! This is your first Durable Objects application.
+ * Vitess for Durable Objects - Distributed SQL Database on Cloudflare
+ *
+ * This worker provides an RPC interface for executing SQL queries across
+ * a sharded database cluster using Durable Objects for storage and coordination.
  *
  * - Run `npm run dev` in your terminal to start a development server
  * - Open a browser tab at http://localhost:8787/ to see your Durable Object in action
  * - Run `npm run deploy` to publish your application
  *
- * Bind resources to your worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
  * Learn more at https://developers.cloudflare.com/durable-objects
  */
 
+import { WorkerEntrypoint } from 'cloudflare:workers';
+import { createConductor } from './Conductor/Conductor';
+import { queueHandler } from './queue-consumer';
+import type { QueryResult } from './Conductor/Conductor';
+import type { MessageBatch, IndexJob } from './Queue/types';
+
 // Export Durable Objects
-export { Storage } from "./Storage/Storage";
-export { Topology } from "./Topology/Topology";
+export { Storage } from './Storage/Storage';
+export { Topology } from './Topology/Topology';
 
-// Export Conductor
-export { createConductor, ConductorClient } from "./Conductor/Conductor";
-export type { QueryResult } from "./Conductor/Conductor";
+// Export types
+export type { QueryResult } from './Conductor/Conductor';
 
-// Import queue consumer
-import { queueHandler } from "./queue-consumer";
-
-export default {
+/**
+ * Vitess Worker - RPC-enabled SQL query interface
+ *
+ * This worker exposes the Conductor's SQL interface via RPC, allowing
+ * other workers to execute queries via service bindings.
+ *
+ * @example Service Binding Usage (from another worker):
+ * ```typescript
+ * const result = await env.VITESS.sql(['SELECT * FROM users WHERE id = ', ''], [123]);
+ * ```
+ *
+ * @example HTTP API Usage:
+ * ```typescript
+ * POST /sql
+ * {
+ *   "database": "my-database",
+ *   "query": "SELECT * FROM users WHERE id = ?",
+ *   "params": [123]
+ * }
+ * ```
+ */
+export default class VitessWorker extends WorkerEntrypoint<Env> {
 	/**
-	 * This is the standard fetch handler for a Cloudflare Worker
+	 * RPC method: Execute a SQL query
 	 *
-	 * @param request - The request submitted to the Worker from the client
-	 * @param env - The interface to reference bindings declared in wrangler.jsonc
-	 * @param ctx - The execution context of the Worker
-	 * @returns The response to be sent back to the client
+	 * This method is callable via service bindings from other workers:
+	 * const result = await env.VITESS.sql(strings, values, databaseId);
+	 *
+	 * @param strings - Template string array (from tagged template literal)
+	 * @param values - Parameter values
+	 * @param databaseId - Database identifier (defaults to 'default')
+	 * @returns Query result with rows and metadata
 	 */
-	async fetch(request, env, ctx): Promise<Response> {
-		// Example: Get topology information
-		const topologyStub = env.TOPOLOGY.getByName("main");
-		const topology = await topologyStub.getTopology();
+	async sql(
+		strings: TemplateStringsArray | string[],
+		values: any[],
+		databaseId: string = 'default'
+	): Promise<QueryResult> {
+		const conductor = createConductor(databaseId, this.env);
 
-		// Example: Execute a query on a storage node
-		const storageStub = env.STORAGE.getByName("shard-0");
-		const result = await storageStub.executeQuery({
-			query: "SELECT 1 as test",
-			queryType: "SELECT",
-		});
+		// Convert to TemplateStringsArray for the conductor
+		const templateStrings = strings as any as TemplateStringsArray;
+		return await conductor.sql(templateStrings, ...values);
+	}
 
-		return new Response(JSON.stringify({ topology, result }, null, 2), {
-			headers: { "Content-Type": "application/json" },
-		});
-	},
+	/**
+	 * HTTP fetch handler for REST API access
+	 *
+	 * Supports POST /sql for executing queries via HTTP
+	 */
+	async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url);
+
+		// Handle SQL query endpoint
+		if (url.pathname === '/sql' && request.method === 'POST') {
+			try {
+				const body = await request.json<{
+					database?: string;
+					query: string;
+					params?: any[];
+				}>();
+
+				const { database = 'default', query, params = [] } = body;
+
+				// Split query into template strings array and params
+				// For now, we'll treat the query string as a single template
+				const strings = [query] as any as TemplateStringsArray;
+				const result = await this.sql(strings, params, database);
+
+				return new Response(JSON.stringify(result, null, 2), {
+					headers: { 'Content-Type': 'application/json' },
+				});
+			} catch (error) {
+				return new Response(
+					JSON.stringify({
+						error: error instanceof Error ? error.message : String(error),
+					}),
+					{
+						status: 400,
+						headers: { 'Content-Type': 'application/json' },
+					}
+				);
+			}
+		}
+
+		// Handle health check
+		if (url.pathname === '/health') {
+			return new Response(JSON.stringify({ status: 'ok' }), {
+				headers: { 'Content-Type': 'application/json' },
+			});
+		}
+
+		// Default response
+		return new Response(
+			JSON.stringify({
+				message: 'Vitess for Durable Objects',
+				endpoints: {
+					'/sql': 'POST - Execute SQL query',
+					'/health': 'GET - Health check',
+				},
+			}),
+			{
+				headers: { 'Content-Type': 'application/json' },
+			}
+		);
+	}
 
 	/**
 	 * Queue handler for processing virtual index jobs
 	 */
-	queue: queueHandler,
-} satisfies ExportedHandler<Env>;
+	async queue(batch: MessageBatch<unknown>): Promise<void> {
+		return queueHandler(batch as MessageBatch<IndexJob>, this.env);
+	}
+}

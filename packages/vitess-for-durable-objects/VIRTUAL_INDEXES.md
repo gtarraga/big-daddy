@@ -316,9 +316,10 @@ type IndexStatus =
 ### Phase 5: Advanced Features
 - [x] Composite indexes: `CREATE INDEX ON users(country, city)`
 - [x] IN queries: `WHERE col IN (val1, val2)`
-- [ ] Explore why we actually need to fetch old index values
-- [ ] Ensure topology is not fetched multiple times in single conductor invocation
-- [ ] Refactor index conductor code
+- [x] Explore why we actually need to fetch old index values → **Implemented RETURNING optimization for DELETE (50% faster)**
+- [x] Ensure topology is not fetched multiple times in single conductor invocation → **Implemented single getQueryPlanData() call**
+- [x] Refactor index conductor code → **Moved all query planning into Topology DO**
+- [ ] **Leftmost prefix matching for composite indexes** - See "Known Limitations" section below
 - [ ] Index validation/repair background job
 - [ ] Index statistics (cardinality, usage metrics)
 - [ ] Index rebuild command
@@ -343,7 +344,48 @@ type IndexStatus =
 - **Acceptable for reads** - may query extra shards, still returns correct results
 - **Repair via background job** - periodic index validation/rebuild
 
-### 4. Storage Concerns
+### 4. Index Maintenance Performance Optimization
+
+**Problem:** Index maintenance for UPDATE/DELETE operations requires knowing the old values to remove them from the index. Originally, this required an extra SELECT query before each UPDATE/DELETE.
+
+**Solution:** Hybrid approach using SQLite's RETURNING clause where possible:
+
+#### DELETE Operations (Optimized ✅)
+- Uses `DELETE ... RETURNING *` to get deleted row values in a single query
+- **Performance:** 50% improvement (1 query instead of 2)
+- SQLite's RETURNING returns the deleted rows, which are exactly what we need
+
+```sql
+-- Before: 2 queries
+SELECT * FROM users WHERE id = 1;  -- Fetch old values
+DELETE FROM users WHERE id = 1;     -- Delete
+
+-- After: 1 query
+DELETE FROM users WHERE id = 1 RETURNING *;  -- Delete and get old values
+```
+
+#### UPDATE Operations (Pre-fetch approach)
+- Still uses SELECT before UPDATE to fetch old values
+- **Why no RETURNING?** SQLite's `UPDATE ... RETURNING` returns NEW values after update
+- **Why not `old.column`?** Cloudflare Workers SQLite doesn't support `old.column` syntax
+  - SQLite 3.35+ supports `RETURNING old.column, new.column` in standard SQLite
+  - Cloudflare Workers runtime doesn't support this advanced syntax yet
+- **Performance:** No change (still 2 queries)
+
+```sql
+-- Current approach (only way that works)
+SELECT * FROM users WHERE id = 1;          -- Fetch old values
+UPDATE users SET email = 'new@example.com' WHERE id = 1;  -- Update
+```
+
+**Future Possibilities for UPDATE:**
+1. If Cloudflare Workers adds `old.column` support → Can optimize to 1 query
+2. Alternative: Use SQLite triggers to capture old values (more complex)
+3. Alternative: Store indexed columns in separate tracking table (overhead)
+
+For now, DELETE optimization alone provides significant value for common deletion patterns.
+
+### 5. Storage Concerns
 - Each unique value = one Topology entry
 - High cardinality columns (like email) → many entries
 - **Mitigation:** Limit to columns with reasonable cardinality
@@ -442,3 +484,125 @@ interface IndexBuildJob {
 
 7. **Index consistency?** What if index update fails but query succeeds?
    - *Solution:* Eventually consistent, repair job validates periodically
+
+## Known Limitations
+
+### Leftmost Prefix Matching for Composite Indexes
+
+**Current Status:** ❌ Not Implemented
+
+**The Problem:**
+
+Virtual indexes use hash-based exact key matching for shard routing. For composite indexes like `(category, subcategory, brand)`, this creates a limitation:
+
+**What works:**
+```sql
+-- Full key match
+CREATE INDEX idx_cat_sub_brand ON products(category, subcategory, brand);
+INSERT INTO products VALUES (1, 'Electronics', 'Phones', 'Apple', 'iPhone');
+
+-- This works - full 3-column match
+SELECT * FROM products
+WHERE category = 'Electronics'
+  AND subcategory = 'Phones'
+  AND brand = 'Apple';
+-- ✅ Index lookup: ["Electronics", "Phones", "Apple"] → finds shard
+```
+
+**What doesn't work:**
+```sql
+-- Leftmost prefix query (only 2 columns)
+SELECT * FROM products
+WHERE category = 'Electronics'
+  AND subcategory = 'Phones';
+-- ❌ Index lookup: ["Electronics", "Phones"] → no match
+-- Index only contains: ["Electronics", "Phones", "Apple"]
+```
+
+**Why it fails:**
+
+1. Query creates lookup key: `'["Electronics","Phones"]'`
+2. Index contains: `'["Electronics","Phones","Apple"]'`
+3. These are different strings → no exact match → falls back to querying all shards
+
+**Root Cause:**
+
+- Virtual indexes store exact key-to-shard mappings (hash table)
+- B-tree indexes in traditional databases support prefix matching because they're sorted
+- Our hash-based approach requires exact string matches
+
+**How to Fix:**
+
+There are two implementation approaches:
+
+**Option 1: Store All Prefixes During Index Maintenance (Recommended)**
+
+When inserting a row with composite index values `['Electronics', 'Phones', 'Apple']`, store:
+- Full key: `["Electronics", "Phones", "Apple"]` → shard X
+- 2-column prefix: `["Electronics", "Phones"]` → shard X
+- 1-column prefix: `"Electronics"` → shard X
+
+**Pros:**
+- Leftmost prefix queries automatically work
+- No query-time complexity
+- Consistent with how traditional indexes work
+
+**Cons:**
+- Storage overhead: For N-column index, store N entries per row
+- More index maintenance updates per INSERT/UPDATE/DELETE
+
+**Option 2: Prefix Matching at Query Time**
+
+When querying with 2 columns, scan all index entries that start with those columns.
+
+**Pros:**
+- Less storage overhead
+- Simpler index maintenance
+
+**Cons:**
+- Requires scanning index entries (slower)
+- More complex query logic
+- Doesn't scale well with many index entries
+
+**Recommendation:** Implement Option 1 (store all prefixes)
+
+**Implementation TODO:**
+
+1. Modify `maintainIndexesForInsert()` in Conductor.ts:
+   ```typescript
+   // For composite index (a, b, c) with values (1, 2, 3), insert:
+   await topologyStub.addShardToIndexEntry(indexName, '[1,2,3]', shardId);     // Full
+   await topologyStub.addShardToIndexEntry(indexName, '[1,2]', shardId);       // 2-col prefix
+   await topologyStub.addShardToIndexEntry(indexName, '1', shardId);           // 1-col prefix
+   ```
+
+2. Modify `maintainIndexesForUpdate()` - remove old prefixes, add new prefixes
+
+3. Modify `maintainIndexesForDelete()` - remove all prefixes
+
+4. Update `processBuildIndexJob()` in queue-consumer.ts to build all prefixes
+
+5. Add tests for leftmost prefix queries
+
+**Workaround Until Implemented:**
+
+Manually insert prefix keys when building indexes:
+```typescript
+await topologyStub.batchUpsertIndexEntries('idx_cat_sub_brand', [
+  // Full keys
+  { keyValue: JSON.stringify(['Electronics', 'Phones', 'Apple']), shardIds: [0] },
+
+  // 2-column prefixes
+  { keyValue: JSON.stringify(['Electronics', 'Phones']), shardIds: [0] },
+
+  // 1-column prefixes
+  { keyValue: 'Electronics', shardIds: [0] },
+]);
+```
+
+**Estimated Effort:** Medium (2-3 hours)
+- Modify index maintenance methods (~1 hour)
+- Update queue consumer (~30 min)
+- Add comprehensive tests (~1-2 hours)
+
+**Priority:** Medium - Nice to have for full composite index support, but exact matches work fine for now
