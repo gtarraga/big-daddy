@@ -9,7 +9,7 @@ import type {
 	UpdateStatement,
 	DeleteStatement,
 } from '@databases/sqlite-ast';
-import type { QueryType } from '../../Storage/Storage';
+import type { QueryType } from '../storage';
 
 /**
  * Extract the table name from a parsed SQL statement

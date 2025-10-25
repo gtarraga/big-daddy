@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
-import { createConductor } from '../Conductor/Conductor';
-import { queueHandler } from '../queue-consumer';
-import type { IndexBuildJob } from '../Queue/types';
+import { createConductor } from '../../src/engine/conductor';
+import { queueHandler } from '../../src/queue-consumer';
+import type { IndexBuildJob } from '../../src/engine/queue/types';
 
 /**
  * End-to-end tests for Virtual Index functionality

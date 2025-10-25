@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
-import type { QueryBatch } from './Storage';
+import type { QueryBatch } from '../../src/engine/storage';
 
 describe('Storage Durable Object', () => {
 	it('should execute a simple query', async () => {

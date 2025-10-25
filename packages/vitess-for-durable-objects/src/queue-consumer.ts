@@ -6,9 +6,9 @@
  * - IndexMaintenanceJob: Maintain indexes after UPDATE/DELETE operations
  */
 
-import type { IndexJob, IndexBuildJob, IndexMaintenanceJob, MessageBatch } from './Queue/types';
-import type { Storage } from './Storage/Storage';
-import type { Topology } from './Topology/Topology';
+import type { IndexJob, IndexBuildJob, IndexMaintenanceJob, MessageBatch } from './engine/queue/types';
+import type { Storage, QueryResult } from './engine/storage';
+import type { Topology } from './engine/topology';
 
 /**
  * Queue message handler
@@ -98,15 +98,23 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env): Promise<void>
 					queryType: 'SELECT',
 				});
 
+				// Type guard: single query always returns QueryResult
+				if (!('rows' in result)) {
+					throw new Error('Expected QueryResult but got BatchQueryResult');
+				}
+
+				// Extract rows with proper typing to avoid deep instantiation with Disposable types
+				const resultRows = (result as any).rows as Record<string, any>[];
+
 				// For each distinct combination, add this shard to its shard set
-				for (const row of result.rows) {
+				for (const row of resultRows) {
 					// Build composite key from all indexed columns
 					// For single column: just the value
 					// For multiple columns: JSON array of values
 					let keyValue: string;
 
 					if (job.columns.length === 1) {
-						const value = row[job.columns[0]];
+						const value: any = row[job.columns[0]];
 						// Skip NULL values
 						if (value === null || value === undefined) {
 							continue;
@@ -223,9 +231,17 @@ async function processIndexMaintenanceJob(job: IndexMaintenanceJob, env: Env): P
 					queryType: 'SELECT',
 				});
 
+				// Type guard: single query always returns QueryResult
+				if (!('rows' in result)) {
+					throw new Error('Expected QueryResult but got BatchQueryResult');
+				}
+
+				// Extract rows with proper typing to avoid deep instantiation with Disposable types
+				const resultRows = (result as any).rows as Record<string, any>[];
+
 				// Build set of values that SHOULD include this shard
 				const shouldExist = new Set<string>();
-				for (const row of result.rows) {
+				for (const row of resultRows) {
 					const keyValue = computeIndexKey(row, indexColumns);
 					if (keyValue) {
 						shouldExist.add(keyValue);

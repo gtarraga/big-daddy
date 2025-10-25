@@ -1,6 +1,6 @@
 import { describe, it, expect, test } from 'vitest';
 import { env } from 'cloudflare:test';
-import { createConductor } from './Conductor';
+import { createConductor } from '../../src/engine/conductor';
 
 describe('Conductor', () => {
 	async function initializeTopology(dbId: string, numNodes: number = 2) {

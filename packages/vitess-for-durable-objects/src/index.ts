@@ -12,17 +12,17 @@
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { createConductor } from './Conductor/Conductor';
+import { createConductor } from './engine/conductor';
 import { queueHandler } from './queue-consumer';
-import type { QueryResult } from './Conductor/Conductor';
-import type { MessageBatch, IndexJob } from './Queue/types';
+import type { QueryResult } from './engine/conductor';
+import type { MessageBatch, IndexJob } from './engine/queue/types';
 
 // Export Durable Objects
-export { Storage } from './Storage/Storage';
-export { Topology } from './Topology/Topology';
+export { Storage } from './engine/storage';
+export { Topology } from './engine/topology';
 
 // Export types
-export type { QueryResult } from './Conductor/Conductor';
+export type { QueryResult } from './engine/conductor';
 
 /**
  * Vitess Worker - RPC-enabled SQL query interface

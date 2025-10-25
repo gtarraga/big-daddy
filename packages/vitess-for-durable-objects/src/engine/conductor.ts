@@ -8,12 +8,11 @@ import type {
 	CreateTableStatement,
 	CreateIndexStatement,
 } from '@databases/sqlite-ast';
-import type { DurableObjectStub } from 'cloudflare:workers';
-import type { Storage, QueryResult as StorageQueryResult, QueryType } from '../Storage/Storage';
-import type { Topology, TableMetadata } from '../Topology/Topology';
+import type { Storage, QueryResult as StorageQueryResult, QueryType } from './storage';
+import type { Topology, TableMetadata } from './topology';
 import { extractTableName, getQueryType, buildQuery } from './utils/ast-utils';
 import { extractTableMetadata } from './utils/schema-utils';
-import type { IndexJob, IndexMaintenanceJob } from '../Queue/types';
+import type { IndexJob, IndexMaintenanceJob } from './queue/types';
 
 /**
  * Result from a SQL query execution
@@ -87,8 +86,8 @@ export class ConductorClient {
 			await this.enqueueIndexMaintenanceJob(
 				tableName,
 				statement,
-				shardsToQuery.map(s => s.shard_id),
-				planData.virtualIndexes
+				shardsToQuery.map((s) => s.shard_id),
+				planData.virtualIndexes,
 			);
 		}
 
@@ -335,20 +334,18 @@ export class ConductorClient {
 		tableName: string,
 		statement: UpdateStatement | DeleteStatement,
 		shardIds: number[],
-		virtualIndexes: Array<{ index_name: string; columns: string }>
+		virtualIndexes: Array<{ index_name: string; columns: string }>,
 	): Promise<void> {
 		// For UPDATE: determine which indexes are affected by the updated columns
-		const updatedColumns =
-			statement.type === 'UpdateStatement' ? statement.set.map((s) => s.column.name) : undefined;
+		const updatedColumns = statement.type === 'UpdateStatement' ? statement.set.map((s) => s.column.name) : undefined;
 
 		// Filter to affected indexes only
-		const affectedIndexes =
-			updatedColumns
-				? virtualIndexes.filter((idx) => {
-						const indexCols = JSON.parse(idx.columns);
-						return indexCols.some((col: string) => updatedColumns.includes(col));
-				  })
-				: virtualIndexes; // DELETE affects all indexes
+		const affectedIndexes = updatedColumns
+			? virtualIndexes.filter((idx) => {
+					const indexCols = JSON.parse(idx.columns);
+					return indexCols.some((col: string) => updatedColumns.includes(col));
+				})
+			: virtualIndexes; // DELETE affects all indexes
 
 		if (affectedIndexes.length === 0) {
 			return; // No indexes to maintain
@@ -408,7 +405,7 @@ export class ConductorClient {
 							},
 						],
 					},
-					this.env
+					this.env,
 				);
 			}
 		} catch (error) {

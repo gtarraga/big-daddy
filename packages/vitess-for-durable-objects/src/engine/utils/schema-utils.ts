@@ -3,7 +3,7 @@
  */
 
 import type { CreateTableStatement } from '@databases/sqlite-ast';
-import type { TableMetadata } from '../../Topology/Topology';
+import type { TableMetadata } from '../topology';
 
 /**
  * Extract table metadata from a CREATE TABLE statement
