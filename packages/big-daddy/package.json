@@ -2,6 +2,10 @@
 	"name": "big-daddy",
 	"version": "0.0.0",
 	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
@@ -15,7 +19,7 @@
 		"workers-tagged-logger": "^0.13.7"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.9.13",
+		"@cloudflare/vitest-pool-workers": "^0.10.3",
 		"typescript": "^5.5.2",
 		"vitest": "^3.2.4",
 		"wrangler": "^4.45.0"

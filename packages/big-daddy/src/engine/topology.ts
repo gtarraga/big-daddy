@@ -199,7 +199,7 @@ export class Topology extends DurableObject<Env> {
 			value: string;
 		}[];
 
-		return result.length > 0 && result[0].value === 'true';
+		return result.length > 0 && result[0]!.value === 'true';
 	}
 
 	/**
@@ -365,7 +365,7 @@ export class Topology extends DurableObject<Env> {
 				await this.maintainIndexesForInsert(
 					statement as any,
 					virtual_indexes,
-					shardsToQuery[0], // INSERT always goes to single shard
+					shardsToQuery[0]!, // INSERT always goes to single shard
 					params
 				);
 			}
@@ -404,7 +404,7 @@ export class Topology extends DurableObject<Env> {
 			} catch (error) {
 				// If we can't determine shard (e.g., bulk inserts), use first shard as fallback
 				// This matches the Conductor's behavior
-				return [tableShards[0]];
+				return [tableShards[0]!];
 			}
 		}
 
@@ -807,7 +807,7 @@ export class Topology extends DurableObject<Env> {
 				for (let shardId = 0; shardId < table.num_shards; shardId++) {
 					// Simple modulo distribution across available nodes
 					const nodeIndex = shardId % nodes.length;
-					const nodeId = nodes[nodeIndex].node_id;
+					const nodeId = nodes[nodeIndex]!.node_id;
 
 					this.ctx.storage.sql.exec(
 						`INSERT INTO table_shards (table_name, shard_id, node_id, created_at, updated_at)
@@ -986,7 +986,7 @@ export class Topology extends DurableObject<Env> {
 			return null;
 		}
 
-		return JSON.parse(result[0].shard_ids) as number[];
+		return JSON.parse(result[0]!.shard_ids) as number[];
 	}
 
 	/**
@@ -1139,7 +1139,7 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Alarm handler - runs every 5 minutes to check storage capacity and status
 	 */
-	async alarm(): Promise<void> {
+	override async alarm(): Promise<void> {
 		// Get all storage nodes
 		const nodes = this.ctx.storage.sql.exec(`SELECT node_id FROM storage_nodes`).toArray() as unknown as { node_id: string }[];
 

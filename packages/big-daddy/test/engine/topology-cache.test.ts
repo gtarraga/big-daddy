@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
-import { createConductor } from '../../src/engine/conductor';
+import { createConductor } from '../../src/index';
 
 describe('TopologyCache', () => {
 	async function initializeTopology(dbId: string, numNodes: number = 2) {
@@ -66,6 +66,7 @@ describe('TopologyCache', () => {
 
 		const conductor = createConductor(dbId, env);
 
+
 		// Create table
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)`;
 
@@ -108,6 +109,7 @@ describe('TopologyCache', () => {
 
 		const conductor = createConductor(dbId, env);
 
+
 		// Create table and insert data
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)`;
 		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${1}, ${'Widget'}, ${9.99})`;
@@ -130,6 +132,7 @@ describe('TopologyCache', () => {
 
 		const conductor = createConductor(dbId, env);
 
+
 		// Create table and insert data
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)`;
 		await conductor.sql`INSERT INTO products (id, name, price) VALUES (${1}, ${'Widget'}, ${9.99})`;
@@ -151,6 +154,7 @@ describe('TopologyCache', () => {
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, env);
+
 
 		// Create table and insert data
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)`;
@@ -182,6 +186,7 @@ describe('TopologyCache', () => {
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, env);
+
 
 		// Create table and index
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, name TEXT)`;
@@ -218,6 +223,7 @@ describe('TopologyCache', () => {
 
 		const conductor = createConductor(dbId, env);
 
+
 		// Create table and composite index
 		await conductor.sql`CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, status TEXT, total REAL)`;
 		await conductor.sql`CREATE INDEX idx_user_status ON orders(user_id, status)`;
@@ -242,6 +248,7 @@ describe('TopologyCache', () => {
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, env);
+
 
 		// Create table and index
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, name TEXT)`;
@@ -271,6 +278,7 @@ describe('TopologyCache', () => {
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, env);
+
 
 		// Create table
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)`;
@@ -302,6 +310,7 @@ describe('TopologyCache', () => {
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, env);
+
 
 		// Create table
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
@@ -349,6 +358,7 @@ describe('TopologyCache', () => {
 		await initializeTopology(dbId);
 
 		const conductor = createConductor(dbId, env);
+
 
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)`;
 		await conductor.sql`INSERT INTO products (id, name) VALUES (${1}, ${'Widget'})`;

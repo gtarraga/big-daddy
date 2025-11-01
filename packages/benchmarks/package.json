@@ -8,7 +8,11 @@
 		"deploy": "wrangler deploy",
 		"typecheck": "tsc --noEmit",
 		"bench": "artillery run artillery.yml",
-		"bench:simple": "artillery run artillery-simple.yml"
+		"bench:simple": "artillery run artillery-simple.yml",
+		"blog:setup": "curl -X POST http://localhost:8787/setup",
+		"blog:seed": "curl -X POST http://localhost:8787/seed -H 'Content-Type: application/json' -d '{\"users\":10,\"posts\":50,\"comments\":100,\"likes\":200}'",
+		"blog:stats": "curl http://localhost:8787/stats",
+		"blog:reset": "curl -X POST http://localhost:8787/reset"
 	},
 	"dependencies": {
 		"big-daddy": "workspace:*"

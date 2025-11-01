@@ -15,7 +15,7 @@ import type { Topology, TableMetadata, QueryPlanData } from './topology';
 import { extractTableName, getQueryType, buildQuery } from './utils/ast-utils';
 import { extractTableMetadata } from './utils/schema-utils';
 import type { IndexJob, IndexMaintenanceJob } from './queue/types';
-import { TopologyCache } from './utils/topology-cache';
+import { TopologyCache, type CacheStats } from './utils/topology-cache';
 
 /**
  * Cache statistics for a query
@@ -468,11 +468,12 @@ export class ConductorClient {
 			return;
 		}
 
-		const row = statement.values[0]; // Only handle single-row inserts for now
+		const columns = statement.columns; // Narrow the type
+		const row = statement.values[0]!; // Only handle single-row inserts for now
 
 		for (const index of virtualIndexes) {
 			const indexColumns = JSON.parse(index.columns);
-			const keyValue = this.extractKeyValueFromRow(statement.columns, row, indexColumns, params);
+			const keyValue = this.extractKeyValueFromRow(columns, row, indexColumns, params);
 			if (keyValue) {
 				this.cache.invalidateIndexKeys(index.index_name, [keyValue]);
 			}
@@ -662,7 +663,7 @@ export class ConductorClient {
 	 */
 	private mergeResults(results: QueryResult[], statement: Statement): QueryResult {
 		if (results.length === 1) {
-			return results[0];
+			return results[0]!;
 		}
 
 		const isSelect = statement.type === 'SelectStatement';
@@ -790,16 +791,33 @@ export class ConductorClient {
 }
 
 /**
+ * Conductor API interface with sql execution and cache management
+ */
+export interface ConductorAPI {
+	sql: (strings: TemplateStringsArray, ...values: any[]) => Promise<QueryResult>;
+	getCacheStats: () => CacheStats;
+	clearCache: () => void;
+}
+
+/**
  * Create a Conductor client for a specific database
  *
  * @param databaseId - Unique identifier for the database
  * @param env - Worker environment with Durable Object bindings
- * @returns A Conductor client with sql method for executing queries
+ * @returns A Conductor API with sql method and cache management
  *
  * @example
  * const conductor = createConductor('my-database', env);
  * const result = await conductor.sql`SELECT * FROM users WHERE id = ${123}`;
+ * const stats = conductor.getCacheStats();
+ * conductor.clearCache();
  */
-export function createConductor(databaseId: string, env: Env): ConductorClient {
-	return new ConductorClient(databaseId, env.STORAGE, env.TOPOLOGY, env.INDEX_QUEUE, env);
+export function createConductor(databaseId: string, env: Env): ConductorAPI {
+	const client = new ConductorClient(databaseId, env.STORAGE, env.TOPOLOGY, env.INDEX_QUEUE, env);
+
+	return {
+		sql: (strings: TemplateStringsArray, ...values: any[]) => client.sql(strings, undefined, ...values),
+		getCacheStats: () => client.getCacheStats(),
+		clearCache: () => client.clearCache(),
+	};
 }

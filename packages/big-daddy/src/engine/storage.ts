@@ -102,7 +102,7 @@ export class Storage extends DurableObject<Env> {
 
 				// Return single result if input was a single query, batch result otherwise
 				if (!isBatch) {
-					return results[0];
+					return results[0]!;
 				}
 
 				return {

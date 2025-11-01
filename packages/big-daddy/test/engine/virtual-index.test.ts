@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
-import { createConductor } from '../../src/engine/conductor';
+import { createConductor } from '../../src/index';
 import { queueHandler } from '../../src/queue-consumer';
 import type { IndexBuildJob } from '../../src/engine/queue/types';
 
@@ -25,6 +25,7 @@ describe('Virtual Index End-to-End', () => {
 		await initializeTopology(dbId, 3);
 
 		const conductor = createConductor(dbId, env);
+
 
 		// 1. Create table
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
@@ -196,6 +197,7 @@ describe('Virtual Index End-to-End', () => {
 
 		const conductor = createConductor(dbId, env);
 
+
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
 
 		// Insert 50 users with unique emails
@@ -293,6 +295,7 @@ describe('Virtual Index End-to-End', () => {
 		await initializeTopology(dbId, 3);
 
 		const conductor = createConductor(dbId, env);
+
 
 		// Create table and index
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
@@ -441,6 +444,7 @@ describe('Virtual Index End-to-End', () => {
 
 		const conductor = createConductor(dbId, env);
 
+
 		// Create table and insert data
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
 		await conductor.sql`INSERT INTO users (id, name, email) VALUES (1, ${'Alice'}, ${'alice@example.com'})`;
@@ -506,6 +510,7 @@ describe('Virtual Index End-to-End', () => {
 		await initializeTopology(dbId, 3);
 
 		const conductor = createConductor(dbId, env);
+
 
 		// Create table and insert data
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;

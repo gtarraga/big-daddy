@@ -18,23 +18,136 @@ import { createConductor } from './engine/conductor';
 import { queueHandler } from './queue-consumer';
 import type { QueryResult } from './engine/conductor';
 import type { MessageBatch, IndexJob } from './engine/queue/types';
-
+import { Topology } from './engine/topology';
+import { Storage } from './engine/storage';
 // Export Durable Objects
-export { Storage } from './engine/storage';
-export { Topology } from './engine/topology';
+export { Storage, Topology };
+
+// Export conductor creation functions
+export { createConductor } from './engine/conductor';
 
 // Export types
-export type { QueryResult } from './engine/conductor';
+export type { QueryResult, ConductorAPI } from './engine/conductor';
+export type { CacheStats } from './engine/utils/topology-cache';
 
 /**
- * Vitess Worker - RPC-enabled SQL query interface
+ * Configuration options for createConnection
+ */
+export interface ConnectionConfig {
+	/** Number of storage nodes to create for this database */
+	nodes: number;
+	/** Optional correlation ID for request tracking */
+	correlationId?: string;
+}
+
+/**
+ * SQL tagged template literal function
+ */
+export interface SqlFunction {
+	(strings: TemplateStringsArray, ...values: any[]): Promise<QueryResult>;
+}
+
+/**
+ * Environment interface with required Big Daddy bindings
+ */
+export interface BigDaddyEnv {
+	STORAGE: DurableObjectNamespace<Storage>;
+	TOPOLOGY: DurableObjectNamespace<Topology>;
+	INDEX_QUEUE: Queue;
+}
+
+/**
+ * Create a connection to a database with automatic topology initialization
  *
- * This worker exposes the Conductor's SQL interface via RPC, allowing
- * other workers to execute queries via service bindings.
+ * This function:
+ * 1. Checks if topology exists in the cache
+ * 2. Checks if topology exists in the Topology DO
+ * 3. Creates a new topology if it doesn't exist
+ * 4. Returns a sql tagged template literal function ready to use
+ *
+ * @param databaseId - Unique identifier for the database
+ * @param config - Configuration options (nodes, correlationId)
+ * @param env - Worker environment with Durable Object bindings
+ * @returns SQL tagged template literal function
+ *
+ * @example
+ * ```typescript
+ * const sql = await createConnection('my-database', { nodes: 10 }, env);
+ * const result = await sql`SELECT * FROM users WHERE id = ${123}`;
+ * ```
+ */
+export async function createConnection(databaseId: string, config: ConnectionConfig, env: BigDaddyEnv): Promise<SqlFunction> {
+	return withLogTags({ source: 'createConnection' }, async () => {
+		const cid = config.correlationId || crypto.randomUUID();
+
+		logger.setTags({
+			correlationId: cid,
+			requestId: cid,
+			databaseId,
+			component: 'createConnection',
+		});
+
+		logger.debug('Creating connection', {
+			nodes: config.nodes,
+		});
+
+		// Get the Topology DO stub
+		const topologyId = env.TOPOLOGY.idFromName(databaseId);
+		const topologyStub = env.TOPOLOGY.get(topologyId);
+
+		// Try to check if topology exists by calling getTopology
+		// If it throws an error about topology not being created, we'll create it
+		try {
+			const topologyData = await topologyStub.getTopology();
+
+			logger.debug('Topology already exists', {
+				nodes: topologyData.storage_nodes.length,
+			});
+		} catch (error) {
+			// Check if the error is about topology not being created
+			if (error instanceof Error && error.message.includes('Topology not created')) {
+				logger.info('Topology does not exist, creating', {
+					nodes: config.nodes,
+				});
+
+				// Create topology with the specified number of nodes
+				const result = await topologyStub.create(config.nodes);
+
+				if (!result.success) {
+					throw new Error(`Failed to create topology: ${result.error}`);
+				}
+
+				logger.info('Topology created successfully', {
+					nodes: config.nodes,
+				});
+			} else {
+				// Re-throw if it's a different error
+				throw error;
+			}
+		}
+
+		// TODO support passing correlationID here
+		const client = createConductor(databaseId, cid, env);
+
+		// Return the sql function bound with the correlation ID
+		const sql: SqlFunction = async (strings: TemplateStringsArray, ...values: any[]) => {
+			return client.sql(strings, cid, ...values);
+		};
+
+		return sql;
+	});
+}
+
+/**
+ * Big Daddy Worker - RPC-enabled distributed SQL database
+ *
+ * This worker exposes the createConnection API via RPC, allowing
+ * other workers to create database connections via service bindings.
  *
  * @example Service Binding Usage (from another worker):
  * ```typescript
- * const result = await env.VITESS.sql(['SELECT * FROM users WHERE id = ', ''], [123]);
+ * const sql = await env.BIG_DADDY.createConnection('my-database', { nodes: 8 });
+ * const result = await sql`SELECT * FROM users WHERE id = ${123}`;
  * ```
  *
  * @example HTTP API Usage:
@@ -47,68 +160,19 @@ export type { QueryResult } from './engine/conductor';
  * }
  * ```
  */
-export default class VitessWorker extends WorkerEntrypoint<Env> {
+export default class BigDaddy extends WorkerEntrypoint<Env> {
 	/**
-	 * RPC method: Execute a SQL query
+	 * RPC method: Create a connection to a database
 	 *
 	 * This method is callable via service bindings from other workers:
-	 * const result = await env.VITESS.sql(strings, values, databaseId);
+	 * const sql = await env.BIG_DADDY.createConnection('my-database', { nodes: 8 });
 	 *
-	 * @param strings - Template string array (from tagged template literal)
-	 * @param values - Parameter values
-	 * @param databaseId - Database identifier (defaults to 'default')
-	 * @returns Query result with rows and metadata
+	 * @param databaseId - Unique identifier for the database
+	 * @param config - Configuration options (nodes, correlationId)
+	 * @returns SQL tagged template literal function
 	 */
-	async sql(
-		strings: TemplateStringsArray | string[],
-		values: any[] = [],
-		databaseId: string = 'default',
-		correlationId?: string
-	): Promise<QueryResult> {
-		return withLogTags({ source: 'VitessWorker' }, async () => {
-			const startTime = Date.now();
-			const cid = correlationId || crypto.randomUUID();
-
-			// Set correlation ID for all logs in this context
-			logger.setTags({
-				correlationId: cid,
-				requestId: cid, // Workers Logs UI uses requestId
-				databaseId,
-				component: 'VitessWorker',
-				operation: 'sql',
-			});
-
-			logger.info('Executing SQL query via RPC', {
-				paramCount: values.length,
-			});
-
-			try {
-				const conductor = createConductor(databaseId, this.env);
-
-				// Convert to TemplateStringsArray for the conductor
-				const templateStrings = strings as any as TemplateStringsArray;
-				const result = await conductor.sql(templateStrings, cid, ...values);
-
-				const duration = Date.now() - startTime;
-				logger.info('SQL query completed successfully', {
-					duration,
-					rowCount: result.rows.length,
-					rowsAffected: result.rowsAffected,
-					status: 'success',
-				});
-
-				return result;
-			} catch (error) {
-				const duration = Date.now() - startTime;
-				logger.error('SQL query failed', {
-					duration,
-					status: 'failure',
-					error: error instanceof Error ? error.message : String(error),
-					errorCode: error instanceof Error ? error.name : 'UnknownError',
-				});
-				throw error;
-			}
-		});
+	async createConnection(databaseId: string, config: ConnectionConfig): Promise<SqlFunction> {
+		return createConnection(databaseId, config, this.env);
 	}
 
 	/**
@@ -116,20 +180,17 @@ export default class VitessWorker extends WorkerEntrypoint<Env> {
 	 *
 	 * Supports POST /sql for executing queries via HTTP
 	 */
-	async fetch(request: Request): Promise<Response> {
-		return withLogTags({ source: 'VitessWorker' }, async () => {
+	override async fetch(request: Request): Promise<Response> {
+		return withLogTags({ source: 'BigDaddy' }, async () => {
 			const url = new URL(request.url);
 
 			// Generate or extract correlation ID from request headers
-			const correlationId =
-				request.headers.get('x-correlation-id') ||
-				request.headers.get('cf-ray') ||
-				crypto.randomUUID();
+			const correlationId = request.headers.get('x-correlation-id') || request.headers.get('cf-ray') || crypto.randomUUID();
 
 			logger.setTags({
 				correlationId,
 				requestId: correlationId,
-				component: 'VitessWorker',
+				component: 'BigDaddy',
 				operation: 'fetch',
 			});
 
@@ -149,10 +210,13 @@ export default class VitessWorker extends WorkerEntrypoint<Env> {
 
 					const { database = 'default', query, params = [] } = body;
 
-					// Split query into template strings array and params
-					// For now, we'll treat the query string as a single template
+					// Create connection and execute query
+					const sql = await this.createConnection(database, { nodes: 8, correlationId });
+
+					// Parse query to build template strings
 					const strings = [query] as any as TemplateStringsArray;
-					const result = await this.sql(strings, params, database, correlationId);
+					const conductor = createConductor(database, this.env);
+					const result = await conductor.sql(strings, ...params);
 
 					return new Response(JSON.stringify(result, null, 2), {
 						headers: { 'Content-Type': 'application/json' },
@@ -169,7 +233,7 @@ export default class VitessWorker extends WorkerEntrypoint<Env> {
 						{
 							status: 400,
 							headers: { 'Content-Type': 'application/json' },
-						}
+						},
 					);
 				}
 			}
@@ -184,7 +248,7 @@ export default class VitessWorker extends WorkerEntrypoint<Env> {
 			// Default response
 			return new Response(
 				JSON.stringify({
-					message: 'Vitess for Durable Objects',
+					message: 'Big Daddy - Distributed SQL on Cloudflare',
 					endpoints: {
 						'/sql': 'POST - Execute SQL query',
 						'/health': 'GET - Health check',
@@ -192,7 +256,7 @@ export default class VitessWorker extends WorkerEntrypoint<Env> {
 				}),
 				{
 					headers: { 'Content-Type': 'application/json' },
-				}
+				},
 			);
 		});
 	}
@@ -200,13 +264,13 @@ export default class VitessWorker extends WorkerEntrypoint<Env> {
 	/**
 	 * Queue handler for processing virtual index jobs
 	 */
-	async queue(batch: MessageBatch<unknown>): Promise<void> {
-		return withLogTags({ source: 'VitessWorker' }, async () => {
+	override async queue(batch: MessageBatch<unknown>): Promise<void> {
+		return withLogTags({ source: 'BigDaddy' }, async () => {
 			const correlationId = crypto.randomUUID();
 			logger.setTags({
 				correlationId,
 				requestId: correlationId,
-				component: 'VitessWorker',
+				component: 'BigDaddy',
 				operation: 'queue',
 			});
 

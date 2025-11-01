@@ -327,7 +327,7 @@ export class TopologyCache {
 
 			const numToRemove = Math.ceil(this.MAX_ENTRIES * 0.1); // Remove 10% of entries
 			for (let i = 0; i < numToRemove && i < entries.length; i++) {
-				this.cache.delete(entries[i][0]);
+				this.cache.delete(entries[i]![0]);
 				this.stats.evictions++;
 			}
 		}

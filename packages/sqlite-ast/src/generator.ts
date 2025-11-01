@@ -318,8 +318,8 @@ function generateInExpression(expr: InExpression): string {
   const operator = expr.not ? "NOT IN" : "IN";
 
   // Check if this is a subquery
-  if (expr.values.length === 1 && expr.values[0].type === "SubqueryExpression") {
-    return `${value} ${operator} ${generateExpression(expr.values[0])}`;
+  if (expr.values.length === 1 && expr.values[0]!.type === "SubqueryExpression") {
+    return `${value} ${operator} ${generateExpression(expr.values[0]!)}`;
   }
 
   const values = expr.values.map(generateExpression).join(", ");

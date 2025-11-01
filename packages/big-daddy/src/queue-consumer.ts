@@ -171,7 +171,7 @@ async function processBuildIndexJob(job: IndexBuildJob, env: Env, correlationId?
 					let keyValue: string;
 
 					if (job.columns.length === 1) {
-						const value: any = row[job.columns[0]];
+						const value: any = row[job.columns[0]!];
 						// Skip NULL values
 						if (value === null || value === undefined) {
 							continue;
