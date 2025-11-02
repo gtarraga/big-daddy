@@ -13,12 +13,14 @@
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { withLogTags } from 'workers-tagged-logger';
+import { Hono } from 'hono';
 import { logger } from './logger';
 import { createConductor } from './engine/conductor';
 import { queueHandler } from './queue-consumer';
+import { dashboard } from './dashboard.tsx';
 import type { QueryResult } from './engine/conductor';
 import type { MessageBatch, IndexJob } from './engine/queue/types';
-import { Topology } from './engine/topology';
+import { Topology } from './engine/topology/index';
 import { Storage } from './engine/storage';
 // Export Durable Objects
 export { Storage, Topology };
@@ -126,12 +128,11 @@ export async function createConnection(databaseId: string, config: ConnectionCon
 			}
 		}
 
-		// TODO support passing correlationID here
 		const client = createConductor(databaseId, cid, env);
 
-		// Return the sql function bound with the correlation ID
+		// Return the sql function bound with the conductor client
 		const sql: SqlFunction = async (strings: TemplateStringsArray, ...values: any[]) => {
-			return client.sql(strings, cid, ...values);
+			return client.sql(strings, ...values);
 		};
 
 		return sql;
@@ -176,89 +177,82 @@ export default class BigDaddy extends WorkerEntrypoint<Env> {
 	}
 
 	/**
-	 * HTTP fetch handler for REST API access
+	 * HTTP fetch handler for REST API access and dashboard
 	 *
-	 * Supports POST /sql for executing queries via HTTP
+	 * Mounts the dashboard app and handles API endpoints:
+	 * - GET /dash/:databaseId - View database topology
+	 * - POST /sql - Execute SQL query
+	 * - GET /health - Health check
 	 */
 	override async fetch(request: Request): Promise<Response> {
-		return withLogTags({ source: 'BigDaddy' }, async () => {
-			const url = new URL(request.url);
+		// Create a Hono app for this request
+		const app = new Hono<{ Bindings: Env }>();
 
-			// Generate or extract correlation ID from request headers
-			const correlationId = request.headers.get('x-correlation-id') || request.headers.get('cf-ray') || crypto.randomUUID();
+		// Generate or extract correlation ID from request headers
+		const correlationId = request.headers.get('x-correlation-id') || request.headers.get('cf-ray') || crypto.randomUUID();
 
-			logger.setTags({
-				correlationId,
-				requestId: correlationId,
-				component: 'BigDaddy',
-				operation: 'fetch',
-			});
-
-			logger.debug('HTTP request received', {
-				method: request.method,
-				path: url.pathname,
-			});
-
-			// Handle SQL query endpoint
-			if (url.pathname === '/sql' && request.method === 'POST') {
-				try {
-					const body = await request.json<{
-						database?: string;
-						query: string;
-						params?: any[];
-					}>();
-
-					const { database = 'default', query, params = [] } = body;
-
-					// Create connection and execute query
-					const sql = await this.createConnection(database, { nodes: 8, correlationId });
-
-					// Parse query to build template strings
-					const strings = [query] as any as TemplateStringsArray;
-					const conductor = createConductor(database, this.env);
-					const result = await conductor.sql(strings, ...params);
-
-					return new Response(JSON.stringify(result, null, 2), {
-						headers: { 'Content-Type': 'application/json' },
-					});
-				} catch (error) {
-					logger.error('SQL query request failed', {
-						error: error instanceof Error ? error.message : String(error),
-						status: 'failure',
-					});
-					return new Response(
-						JSON.stringify({
-							error: error instanceof Error ? error.message : String(error),
-						}),
-						{
-							status: 400,
-							headers: { 'Content-Type': 'application/json' },
-						},
-					);
-				}
-			}
-
-			// Handle health check
-			if (url.pathname === '/health') {
-				return new Response(JSON.stringify({ status: 'ok' }), {
-					headers: { 'Content-Type': 'application/json' },
-				});
-			}
-
-			// Default response
-			return new Response(
-				JSON.stringify({
-					message: 'Big Daddy - Distributed SQL on Cloudflare',
-					endpoints: {
-						'/sql': 'POST - Execute SQL query',
-						'/health': 'GET - Health check',
-					},
-				}),
+		// Error handling middleware
+		app.onError((err, c) => {
+			console.error('Hono error:', err);
+			return c.json(
 				{
-					headers: { 'Content-Type': 'application/json' },
+					error: err instanceof Error ? err.message : String(err),
+					stack: err instanceof Error ? err.stack : undefined,
 				},
+				500
 			);
 		});
+
+		// Mount the dashboard (which includes its own logger middleware)
+		app.route('/', dashboard);
+
+		// Handle SQL query endpoint
+		app.post('/sql', async (c) => {
+			try {
+				const body = await c.req.json<{
+					database?: string;
+					query: string;
+					params?: any[];
+				}>();
+
+				const { database = 'default', query, params = [] } = body;
+
+				// Create connection and execute query
+				const sql = await this.createConnection(database, { nodes: 8, correlationId });
+
+				// Parse query to build template strings
+				const strings = [query] as any as TemplateStringsArray;
+				const result = await sql(strings, ...params);
+
+				return c.json(result);
+			} catch (error) {
+				return c.json(
+					{
+						error: error instanceof Error ? error.message : String(error),
+					},
+					400
+				);
+			}
+		});
+
+		// Handle health check
+		app.get('/health', (c) => {
+			return c.json({ status: 'ok' });
+		});
+
+		// Default response
+		app.get('/', (c) => {
+			return c.json({
+				message: 'Big Daddy - Distributed SQL on Cloudflare',
+				endpoints: {
+					'/dash/:databaseId': 'GET - View database topology dashboard',
+					'/sql': 'POST - Execute SQL query',
+					'/health': 'GET - Health check',
+				},
+			});
+		});
+
+		return app.fetch(request, this.env);
 	}
 
 	/**

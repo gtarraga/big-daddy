@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+@layer components {
+  .badge-active,
+  .badge-ready {
+    @apply bg-black text-white;
+  }
+
+  .badge-building {
+    @apply bg-white text-black border-2 border-black;
+  }
+
+  .badge-failed {
+    @apply bg-black text-white;
+  }
+}

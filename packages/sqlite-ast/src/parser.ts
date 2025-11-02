@@ -7,6 +7,7 @@ import type {
   CreateTableStatement,
   AlterTableStatement,
   CreateIndexStatement,
+  PragmaStatement,
   ColumnDefinition,
   ColumnConstraint,
   Statement,
@@ -113,6 +114,10 @@ class Parser {
 
     if (this.match("ALTER")) {
       return this.parseAlter();
+    }
+
+    if (this.match("PRAGMA")) {
+      return this.parsePragma();
     }
 
     throw new ParserError(`Unexpected statement starting with '${token.token}'`, token);
@@ -494,6 +499,68 @@ class Parser {
     }
 
     throw new ParserError("Expected ADD, RENAME, or DROP in ALTER TABLE");
+  }
+
+  private parsePragma(): PragmaStatement {
+    this.expect("PRAGMA", "keyword");
+
+    // Parse pragma name
+    const nameToken = this.current();
+    if (!nameToken || nameToken.type !== "identifier") {
+      throw new ParserError("Expected pragma name", nameToken);
+    }
+    const name = this.advance()!.token;
+
+    // Check if this is a function-call style PRAGMA (e.g., PRAGMA reshardTable(...))
+    if (this.match("(")) {
+      this.advance(); // consume (
+
+      const args = this.match(")")
+        ? []
+        : this.parseCommaSeparatedList(() => this.parseExpression());
+
+      this.expect(")", "punctuation");
+      this.skipSemicolon();
+
+      return {
+        type: "PragmaStatement",
+        name,
+        arguments: args
+      };
+    }
+
+    // Check if this is a key=value style PRAGMA (e.g., PRAGMA foreign_keys = ON)
+    if (this.match("=")) {
+      this.advance(); // consume =
+
+      // In PRAGMA context, values can be keywords like ON, OFF, etc.
+      // Try to parse as expression first, but if it fails, accept keywords as identifiers
+      let value: Expression;
+      const token = this.current();
+
+      if (token && token.type === "keyword") {
+        // Convert keyword to identifier for PRAGMA values
+        const keywordValue = this.advance()!.token;
+        value = { type: "Identifier", name: keywordValue };
+      } else {
+        value = this.parseExpression();
+      }
+
+      this.skipSemicolon();
+
+      return {
+        type: "PragmaStatement",
+        name,
+        value
+      };
+    }
+
+    // Simple PRAGMA with no arguments or values (e.g., PRAGMA database_list)
+    this.skipSemicolon();
+    return {
+      type: "PragmaStatement",
+      name
+    };
   }
 
   private parseIdentifier(): Identifier {

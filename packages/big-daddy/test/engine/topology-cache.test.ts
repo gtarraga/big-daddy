@@ -13,7 +13,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-select';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 		// Create table and index
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, name TEXT)`;
@@ -64,7 +64,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-insert-invalidation';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table
@@ -107,7 +107,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-update-invalidation';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table and insert data
@@ -130,7 +130,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-delete-invalidation';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table and insert data
@@ -153,7 +153,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-full-scan';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table and insert data
@@ -185,7 +185,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-index-query';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table and index
@@ -221,7 +221,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-composite-index';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table and composite index
@@ -247,7 +247,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-index-invalidation';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table and index
@@ -277,7 +277,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-ttl';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table
@@ -309,7 +309,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-performance';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table
@@ -357,7 +357,7 @@ describe('TopologyCache', () => {
 		const dbId = 'test-cache-stats-in-result';
 		await initializeTopology(dbId);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)`;

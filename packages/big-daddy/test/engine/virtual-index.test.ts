@@ -24,7 +24,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-1';
 		await initializeTopology(dbId, 3);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// 1. Create table
@@ -72,7 +72,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-2';
 		await initializeTopology(dbId, 2);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 		// Create empty table
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, category TEXT)`;
@@ -110,7 +110,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-3';
 		await initializeTopology(dbId, 2);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
 
@@ -156,7 +156,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-4';
 		await initializeTopology(dbId, 2);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
 
@@ -195,7 +195,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-5';
 		await initializeTopology(dbId, 3);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
@@ -243,7 +243,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-6';
 		await initializeTopology(dbId, 10); // Use 10 shards to make optimization more visible
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 		// Create table and insert data
 		await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)`;
@@ -294,7 +294,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-7';
 		await initializeTopology(dbId, 3);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table and index
@@ -363,7 +363,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-8';
 		await initializeTopology(dbId, 10); // Use 10 shards to make the reduction obvious
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 		// Create table
 		await conductor.sql`CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, category TEXT)`;
@@ -442,7 +442,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-9';
 		await initializeTopology(dbId, 3);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table and insert data
@@ -509,7 +509,7 @@ describe('Virtual Index End-to-End', () => {
 		const dbId = 'test-index-e2e-10';
 		await initializeTopology(dbId, 3);
 
-		const conductor = createConductor(dbId, env);
+		const conductor = createConductor(dbId, crypto.randomUUID(), env);
 
 
 		// Create table and insert data

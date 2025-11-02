@@ -1,4 +1,4 @@
-import { parse } from '@databases/sqlite-ast';
+import { parse, generate } from '@databases/sqlite-ast';
 import type {
 	Statement,
 	SelectStatement,
@@ -7,14 +7,16 @@ import type {
 	DeleteStatement,
 	CreateTableStatement,
 	CreateIndexStatement,
+	PragmaStatement,
+	BinaryExpression,
 } from '@databases/sqlite-ast';
 import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../logger';
 import type { Storage, QueryResult as StorageQueryResult, QueryType } from './storage';
-import type { Topology, TableMetadata, QueryPlanData } from './topology';
+import type { Topology, TableMetadata, QueryPlanData } from './topology/index';
 import { extractTableName, getQueryType, buildQuery } from './utils/ast-utils';
 import { extractTableMetadata } from './utils/schema-utils';
-import type { IndexJob, IndexMaintenanceJob } from './queue/types';
+import type { IndexJob, IndexMaintenanceJob, ReshardTableJob } from './queue/types';
 import { TopologyCache, type CacheStats } from './utils/topology-cache';
 
 /**
@@ -28,12 +30,24 @@ export interface QueryCacheStats {
 }
 
 /**
+ * Statistics for a single shard query
+ */
+export interface ShardStats {
+	shardId: number;
+	nodeId: string;
+	rowsReturned: number;
+	rowsAffected?: number;
+	duration: number; // in milliseconds
+}
+
+/**
  * Result from a SQL query execution
  */
 export interface QueryResult {
 	rows: Record<string, any>[];
 	rowsAffected?: number;
 	cacheStats?: QueryCacheStats; // Cache statistics (only for SELECT queries)
+	shardStats?: ShardStats[]; // Statistics for each shard queried
 }
 
 /**
@@ -45,15 +59,18 @@ export interface QueryResult {
  */
 export class ConductorClient {
 	private cache: TopologyCache;
+	private correlationId: string;
 
 	constructor(
 		private databaseId: string,
+		correlationId: string,
 		private storage: DurableObjectNamespace<Storage>,
 		private topology: DurableObjectNamespace<Topology>,
 		private indexQueue?: Queue,
 		private env?: Env, // For test environment queue processing
 	) {
 		this.cache = new TopologyCache();
+		this.correlationId = correlationId;
 	}
 
 	/**
@@ -77,10 +94,10 @@ export class ConductorClient {
 	 * const result = await conductor.sql`SELECT * FROM users WHERE id = ${userId}`;
 	 * await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
 	 */
-	sql = async (strings: TemplateStringsArray, correlationId?: string, ...values: any[]): Promise<QueryResult> => {
+	sql = async (strings: TemplateStringsArray, ...values: any[]): Promise<QueryResult> => {
 		return withLogTags({ source: 'Conductor' }, async () => {
 			const startTime = Date.now();
-			const cid = correlationId || crypto.randomUUID();
+			const cid = this.correlationId;
 
 			logger.setTags({
 				correlationId: cid,
@@ -129,6 +146,20 @@ export class ConductorClient {
 				return result;
 			}
 
+			// Handle PRAGMA statements (special case - controls topology behavior)
+			if (statement.type === 'PragmaStatement') {
+				logger.info('Handling PRAGMA', {
+					pragmaName: (statement as PragmaStatement).name,
+				});
+				const result = await this.handlePragma(statement as PragmaStatement, query, cid);
+				const duration = Date.now() - startTime;
+				logger.info('PRAGMA completed', {
+					duration,
+					status: 'success',
+				});
+				return result;
+			}
+
 			// STEP 2: Route - Get ALL topology data (with caching)
 			const tableName = extractTableName(statement);
 			if (!tableName) {
@@ -154,9 +185,16 @@ export class ConductorClient {
 			// Shard targets are already determined by Topology!
 			const shardsToQuery = planData.shardsToQuery;
 
+			// STEP 2.5: Write Logging - Log writes during resharding (Phase 3A)
+			// If a table is being resharded, log all INSERT/UPDATE/DELETE operations to the queue
+			// These will be replayed to new shards after the copy phase completes
+			if (statement.type === 'InsertStatement' || statement.type === 'UpdateStatement' || statement.type === 'DeleteStatement') {
+				await this.logWriteIfResharding(tableName, statement.type, query, params, cid);
+			}
+
 			// STEP 3: Execute - Run query on all target shards in parallel
 			const queryType = getQueryType(statement);
-			const results = await this.executeOnShards(shardsToQuery, query, params, queryType, cid);
+			const { results, shardStats } = await this.executeOnShards(shardsToQuery, query, params, queryType, cid);
 
 			logger.info('Shard execution completed', {
 				shardsQueried: shardsToQuery.length,
@@ -199,6 +237,9 @@ export class ConductorClient {
 				};
 			}
 
+			// STEP 6: Add shard statistics to result (for all queries)
+			result.shardStats = shardStats;
+
 			const duration = Date.now() - startTime;
 			logger.info('SQL query execution completed', {
 				duration,
@@ -240,7 +281,7 @@ export class ConductorClient {
 		}
 
 		// Extract metadata from the CREATE TABLE statement
-		const metadata = extractTableMetadata(statement);
+		const metadata = extractTableMetadata(statement, query);
 
 		// Add table to topology
 		await topologyStub.updateTopology({
@@ -249,6 +290,10 @@ export class ConductorClient {
 			},
 		});
 
+		// Inject _virtualShard column into the CREATE TABLE query
+		// This hidden column ensures shard isolation at the storage level
+		const modifiedQuery = this.injectVirtualShardColumn(query);
+
 		// Execute CREATE TABLE on all storage nodes in parallel (use actual node IDs from topology)
 		await Promise.all(
 			topologyData.storage_nodes.map(async (node) => {
@@ -256,7 +301,7 @@ export class ConductorClient {
 				const storageStub = this.storage.get(storageId);
 
 				await storageStub.executeQuery({
-					query,
+					query: modifiedQuery,
 					params: [],
 					queryType: 'CREATE',
 				});
@@ -354,6 +399,115 @@ export class ConductorClient {
 		return {
 			rows: [],
 			rowsAffected: 0,
+		};
+	}
+
+	/**
+	 * Handle PRAGMA statements
+	 */
+	private async handlePragma(statement: PragmaStatement, query: string, cid: string): Promise<QueryResult> {
+		const pragmaName = statement.name.toLowerCase();
+
+		if (pragmaName === 'reshardtable') {
+			return this.handleReshardTable(statement, cid);
+		}
+
+		throw new Error(`Unsupported PRAGMA: ${statement.name}`);
+	}
+
+	/**
+	 * Handle PRAGMA reshardTable(table_name, shard_count)
+	 * Initiates a resharding operation for a table
+	 */
+	private async handleReshardTable(stmt: PragmaStatement, cid: string): Promise<QueryResult> {
+		if (!stmt.arguments || stmt.arguments.length !== 2) {
+			throw new Error('PRAGMA reshardTable requires exactly 2 arguments: table name and shard count');
+		}
+
+		// Extract table name from first argument
+		const tableNameArg = stmt.arguments[0];
+		let tableName: string;
+		if (tableNameArg.type === 'Literal') {
+			tableName = (tableNameArg as any).value as string;
+		} else if (tableNameArg.type === 'Identifier') {
+			tableName = (tableNameArg as any).name as string;
+		} else {
+			throw new Error('First argument to PRAGMA reshardTable must be a table name');
+		}
+
+		// Extract shard count from second argument
+		const shardCountArg = stmt.arguments[1];
+		let shardCount: number;
+		if (shardCountArg.type === 'Literal') {
+			shardCount = (shardCountArg as any).value as number;
+		} else if (shardCountArg.type === 'Identifier') {
+			shardCount = parseInt((shardCountArg as any).name as string, 10);
+		} else {
+			throw new Error('Second argument to PRAGMA reshardTable must be a number');
+		}
+
+		if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 256) {
+			throw new Error(`Invalid shard count: ${shardCount}. Must be an integer between 1 and 256`);
+		}
+
+		// Get topology stub
+		const topologyId = this.topology.idFromName(this.databaseId);
+		const topologyStub = this.topology.get(topologyId);
+
+		// Phase 1: Create pending shards and resharding state
+		const changeLogId = crypto.randomUUID();
+		const newShards = await topologyStub.createPendingShards(tableName, shardCount, changeLogId);
+
+		logger.info('Pending shards created for resharding', {
+			table: tableName,
+			shardCount: newShards.length,
+			changeLogId,
+		});
+
+		// Get table metadata for the resharding job
+		const topology = await topologyStub.getTopology();
+		const tableMetadata = topology.tables.find((t) => t.table_name === tableName);
+		if (!tableMetadata) {
+			throw new Error(`Table '${tableName}' not found in topology`);
+		}
+
+		// Phase 2: Enqueue ReshardTableJob for async processing
+		const jobId = crypto.randomUUID();
+		const sourceShardId = topology.table_shards
+			.filter((s) => s.table_name === tableName && s.status === 'active')
+			.sort((a, b) => a.shard_id - b.shard_id)[0]?.shard_id ?? 0;
+
+		await this.enqueueIndexJob({
+			type: 'reshard_table',
+			database_id: this.databaseId,
+			table_name: tableName,
+			source_shard_id: sourceShardId,
+			target_shard_ids: newShards.map((s) => s.shard_id),
+			shard_key: tableMetadata.shard_key,
+			shard_strategy: tableMetadata.shard_strategy,
+			change_log_id: changeLogId,
+			created_at: new Date().toISOString(),
+			correlation_id: cid,
+		} as ReshardTableJob);
+
+		logger.info('Resharding job enqueued', {
+			table: tableName,
+			jobId,
+			sourceShardId,
+			targetShardIds: newShards.map((s) => s.shard_id),
+		});
+
+		return {
+			rows: [
+				{
+					job_id: jobId,
+					status: 'queued',
+					message: `Resharding ${tableName} to ${shardCount} shards`,
+					change_log_id: changeLogId,
+					table_name: tableName,
+					shard_count: shardCount,
+				},
+			],
 		};
 	}
 
@@ -574,6 +728,8 @@ export class ConductorClient {
 	 *
 	 * Cloudflare has a limit of 6 subrequests in parallel (we use 7 to be safe with the limit).
 	 * This method batches shard queries into groups of 7 to respect this constraint.
+	 *
+	 * Returns both the results and metadata about which shards were queried and timing info.
 	 */
 	private async executeOnShards(
 		shardsToQuery: Array<{ table_name: string; shard_id: number; node_id: string }>,
@@ -581,9 +737,10 @@ export class ConductorClient {
 		params: any[],
 		queryType: QueryType,
 		correlationId?: string,
-	): Promise<QueryResult[]> {
+	): Promise<{ results: QueryResult[]; shardStats: ShardStats[] }> {
 		const BATCH_SIZE = 7;
 		const allResults: QueryResult[] = [];
+		const allShardStats: ShardStats[] = [];
 
 		logger.debug('Executing query on shards', {
 			shardCount: shardsToQuery.length,
@@ -610,10 +767,21 @@ export class ConductorClient {
 					const storageStub = this.storage.get(storageId);
 
 					try {
-						// Execute the query (single query always returns StorageQueryResult)
-						const rawResult = await storageStub.executeQuery({
+						// Inject _virtualShard filter into the query for this specific shard
+						// This is critical because during resharding, a physical storage node can have
+						// data from multiple virtual shards, so we need to filter at the SQL level
+						const { modifiedQuery, modifiedParams } = this.injectVirtualShardFilter(
 							query,
 							params,
+							shard.shard_id,
+							shard.table_name,
+							queryType,
+						);
+
+						// Execute the query (single query always returns StorageQueryResult)
+						const rawResult = await storageStub.executeQuery({
+							query: modifiedQuery,
+							params: modifiedParams,
 							queryType,
 							correlationId,
 						});
@@ -622,6 +790,17 @@ export class ConductorClient {
 
 						// Convert StorageQueryResult to QueryResult
 						const result = rawResult as unknown as StorageQueryResult;
+
+						// Track shard stats
+						const shardStat: ShardStats = {
+							shardId: shard.shard_id,
+							nodeId: shard.node_id,
+							rowsReturned: result.rows.length,
+							rowsAffected: result.rowsAffected,
+							duration: shardDuration,
+						};
+
+						allShardStats.push(shardStat);
 
 						logger.debug('Shard query completed', {
 							shardId: shard.shard_id,
@@ -655,7 +834,7 @@ export class ConductorClient {
 			allResults.push(...batchResults);
 		}
 
-		return allResults;
+		return { results: allResults, shardStats: allShardStats };
 	}
 
 	/**
@@ -728,6 +907,50 @@ export class ConductorClient {
 	 *
 	 * In production, queue processing happens automatically via Cloudflare's infrastructure.
 	 */
+	private async logWriteIfResharding(tableName: string, operationType: string, query: string, params: any[], correlationId?: string): Promise<void> {
+		// Get the current resharding state for this table
+		const topologyId = this.topology.idFromName(this.databaseId);
+		const topologyStub = this.topology.get(topologyId);
+		const reshardingState = await topologyStub.getReshardingState(tableName);
+
+		// Only log if resharding is active and in copying phase
+		if (!reshardingState || reshardingState.status !== 'copying') {
+			return;
+		}
+
+		// Log the write operation to the queue for later replay
+		const operation = (operationType === 'InsertStatement' ? 'INSERT' :
+		                  operationType === 'UpdateStatement' ? 'UPDATE' : 'DELETE') as 'INSERT' | 'UPDATE' | 'DELETE';
+
+		const changeLogEntry = {
+			type: 'resharding_change_log' as const,
+			resharding_id: reshardingState.change_log_id,
+			database_id: this.databaseId,
+			table_name: tableName,
+			operation,
+			query,
+			params,
+			timestamp: Date.now(),
+			correlation_id: correlationId,
+		};
+
+		try {
+			await this.enqueueIndexJob(changeLogEntry);
+			logger.debug('Write operation logged for resharding', {
+				table: tableName,
+				operation,
+				reshardingId: reshardingState.change_log_id,
+			});
+		} catch (error) {
+			// Log but don't fail - write logging should not block query execution
+			logger.warn('Failed to log write during resharding', {
+				table: tableName,
+				operation,
+				error: (error as Error).message,
+			});
+		}
+	}
+
 	private async enqueueIndexJob(job: IndexJob): Promise<void> {
 		if (!this.indexQueue) {
 			console.warn('INDEX_QUEUE not available, skipping index job:', job.type);
@@ -775,9 +998,17 @@ export class ConductorClient {
 		if (isSelect) {
 			// Merge rows from all shards
 			const mergedRows = results.flatMap((r) => r.rows);
+
+			// Strip _virtualShard from result rows (hidden column should not be visible to user)
+			const cleanedRows = mergedRows.map((row) => {
+				const cleaned = { ...row };
+				delete (cleaned as any)._virtualShard;
+				return cleaned;
+			});
+
 			return {
-				rows: mergedRows,
-				rowsAffected: mergedRows.length,
+				rows: cleanedRows,
+				rowsAffected: cleanedRows.length,
 			};
 		} else {
 			// For INSERT/UPDATE/DELETE, sum the rowsAffected
@@ -787,6 +1018,228 @@ export class ConductorClient {
 				rowsAffected: totalAffected,
 			};
 		}
+	}
+
+	/**
+	 * Inject _virtualShard filter into a query for a specific shard
+	 *
+	 * Uses the SQL AST parser to safely inject _virtualShard WHERE clause filtering
+	 * for SELECT/UPDATE/DELETE queries. For CREATE TABLE, adds _virtualShard column.
+	 *
+	 * @param query - The original query
+	 * @param params - Original query parameters
+	 * @param shardId - The virtual shard ID to filter by
+	 * @param tableName - The table name (for CREATE operations)
+	 * @param queryType - The type of query (SELECT, INSERT, etc.)
+	 * @returns Modified query and params with _virtualShard filter injected
+	 */
+	private injectVirtualShardFilter(
+		query: string,
+		params: any[],
+		shardId: number,
+		tableName: string,
+		queryType: QueryType,
+	): { modifiedQuery: string; modifiedParams: any[] } {
+		// Don't filter certain operations - they don't need shard isolation
+		if (queryType === 'DROP' || queryType === 'ALTER' || queryType === 'PRAGMA') {
+			return { modifiedQuery: query, modifiedParams: params };
+		}
+
+		// For CREATE, also skip filtering (tables are created on all shards)
+		if (queryType === 'CREATE') {
+			return { modifiedQuery: query, modifiedParams: params };
+		}
+
+		try {
+			// Parse the query into AST
+			const ast = parse(query);
+			const statement = ast.statements[0];
+
+			if (!statement) {
+				return { modifiedQuery: query, modifiedParams: params };
+			}
+
+			let modifiedStatement = statement;
+
+			if (queryType === 'SELECT') {
+				modifiedStatement = this.injectWhereFilterToSelect(
+					statement as SelectStatement,
+					shardId,
+					params,
+				);
+			} else if (queryType === 'UPDATE') {
+				modifiedStatement = this.injectWhereFilterToUpdate(
+					statement as UpdateStatement,
+					shardId,
+					params,
+				);
+			} else if (queryType === 'DELETE') {
+				modifiedStatement = this.injectWhereFilterToDelete(
+					statement as DeleteStatement,
+					shardId,
+					params,
+				);
+			} else if (queryType === 'INSERT') {
+				// Storage nodes handle INSERT modifications, no filtering needed here
+				return { modifiedQuery: query, modifiedParams: params };
+			}
+
+			const modifiedQuery = generate(modifiedStatement);
+			const modifiedParams = [...params, shardId];
+
+			return { modifiedQuery, modifiedParams };
+		} catch (error) {
+			logger.warn('Failed to parse query for _virtualShard injection, using original query', {
+				query,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			// Fallback: return original query
+			return { modifiedQuery: query, modifiedParams: params };
+		}
+	}
+
+	/**
+	 * Inject _virtualShard filter into a SELECT statement using AST manipulation
+	 */
+	private injectWhereFilterToSelect(
+		stmt: SelectStatement,
+		shardId: number,
+		params: any[],
+	): SelectStatement {
+		const virtualShardFilter: BinaryExpression = {
+			type: 'BinaryExpression',
+			operator: '=',
+			left: {
+				type: 'Identifier',
+				name: '_virtualShard',
+			},
+			right: {
+				type: 'Placeholder',
+				parameterIndex: params.length,
+			},
+		};
+
+		if (stmt.where) {
+			// AND existing WHERE with new filter
+			stmt.where = {
+				type: 'BinaryExpression',
+				operator: 'AND',
+				left: virtualShardFilter,
+				right: stmt.where,
+			};
+		} else {
+			// No WHERE clause, just add the filter
+			stmt.where = virtualShardFilter;
+		}
+
+		return stmt;
+	}
+
+	/**
+	 * Inject _virtualShard filter into an UPDATE statement using AST manipulation
+	 */
+	private injectWhereFilterToUpdate(
+		stmt: UpdateStatement,
+		shardId: number,
+		params: any[],
+	): UpdateStatement {
+		const virtualShardFilter: BinaryExpression = {
+			type: 'BinaryExpression',
+			operator: '=',
+			left: {
+				type: 'Identifier',
+				name: '_virtualShard',
+			},
+			right: {
+				type: 'Placeholder',
+				parameterIndex: params.length,
+			},
+		};
+
+		if (stmt.where) {
+			// AND existing WHERE with new filter
+			stmt.where = {
+				type: 'BinaryExpression',
+				operator: 'AND',
+				left: virtualShardFilter,
+				right: stmt.where,
+			};
+		} else {
+			// No WHERE clause, just add the filter
+			stmt.where = virtualShardFilter;
+		}
+
+		return stmt;
+	}
+
+	/**
+	 * Inject _virtualShard filter into a DELETE statement using AST manipulation
+	 */
+	private injectWhereFilterToDelete(
+		stmt: DeleteStatement,
+		shardId: number,
+		params: any[],
+	): DeleteStatement {
+		const virtualShardFilter: BinaryExpression = {
+			type: 'BinaryExpression',
+			operator: '=',
+			left: {
+				type: 'Identifier',
+				name: '_virtualShard',
+			},
+			right: {
+				type: 'Placeholder',
+				parameterIndex: params.length,
+			},
+		};
+
+		if (stmt.where) {
+			// AND existing WHERE with new filter
+			stmt.where = {
+				type: 'BinaryExpression',
+				operator: 'AND',
+				left: virtualShardFilter,
+				right: stmt.where,
+			};
+		} else {
+			// No WHERE clause, just add the filter
+			stmt.where = virtualShardFilter;
+		}
+
+		return stmt;
+	}
+
+	/**
+	 * Inject _virtualShard column into CREATE TABLE query
+	 *
+	 * This adds a hidden column to every table that stores the virtual shard ID.
+	 * This is critical for query isolation at the storage level.
+	 *
+	 * @param query - Original CREATE TABLE query from user
+	 * @returns Modified query with _virtualShard INTEGER NOT NULL DEFAULT 0 column
+	 */
+	private injectVirtualShardColumn(query: string): string {
+		// Match CREATE [TEMP] TABLE [IF NOT EXISTS] table_name (
+		const tableDefRegex = /^(CREATE\s+(?:TEMP|TEMPORARY)?\s*TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s*\()([\s\S]*)(\);?\s*$)/i;
+
+		const match = query.match(tableDefRegex);
+		if (!match) {
+			// If we can't parse it, return original query (shouldn't happen in normal cases)
+			logger.warn('Could not parse CREATE TABLE query for _virtualShard injection', { query });
+			return query;
+		}
+
+		const [, prefix, columnDefs, suffix] = match;
+
+		// Add _virtualShard column before the closing parenthesis
+		// Use a comma if there are existing columns
+		const hasColumns = columnDefs.trim().length > 0;
+		const virtualShardDef = '_virtualShard INTEGER NOT NULL DEFAULT 0';
+		const joinChar = hasColumns ? ',' : '';
+
+		const modifiedQuery = `${prefix}${columnDefs}${joinChar}\n\t${virtualShardDef}${suffix}`;
+
+		return modifiedQuery;
 	}
 }
 
@@ -803,20 +1256,21 @@ export interface ConductorAPI {
  * Create a Conductor client for a specific database
  *
  * @param databaseId - Unique identifier for the database
+ * @param cid - Correlation ID for request tracking
  * @param env - Worker environment with Durable Object bindings
  * @returns A Conductor API with sql method and cache management
  *
  * @example
- * const conductor = createConductor('my-database', env);
+ * const conductor = createConductor('my-database', correlationId, env);
  * const result = await conductor.sql`SELECT * FROM users WHERE id = ${123}`;
  * const stats = conductor.getCacheStats();
  * conductor.clearCache();
  */
-export function createConductor(databaseId: string, env: Env): ConductorAPI {
-	const client = new ConductorClient(databaseId, env.STORAGE, env.TOPOLOGY, env.INDEX_QUEUE, env);
+export function createConductor(databaseId: string, cid: string, env: Env): ConductorAPI {
+	const client = new ConductorClient(databaseId, cid, env.STORAGE, env.TOPOLOGY, env.INDEX_QUEUE, env);
 
 	return {
-		sql: (strings: TemplateStringsArray, ...values: any[]) => client.sql(strings, undefined, ...values),
+		sql: (strings: TemplateStringsArray, ...values: any[]) => client.sql(strings, ...values),
 		getCacheStats: () => client.getCacheStats(),
 		clearCache: () => client.clearCache(),
 	};

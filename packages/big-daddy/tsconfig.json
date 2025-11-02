@@ -8,6 +8,8 @@
 		"lib": ["es2021"],
 		/* Specify what JSX code is generated. */
 		"jsx": "react-jsx",
+		/* JSX pragma for Hono */
+		"jsxImportSource": "hono/jsx",
 
 		/* Specify what module code is generated. */
 		"module": "es2022",
@@ -15,6 +17,8 @@
 		"moduleResolution": "bundler",
 		/* Enable importing .json files */
 		"resolveJsonModule": true,
+		/* Allow importing .ts and .tsx files */
+		"allowImportingTsExtensions": true,
 
 		/* Allow JavaScript files to be a part of your program. Use the `checkJS` option to get errors from these files. */
 		"allowJs": true,

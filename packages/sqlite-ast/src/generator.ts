@@ -7,6 +7,7 @@ import type {
   CreateTableStatement,
   AlterTableStatement,
   CreateIndexStatement,
+  PragmaStatement,
   Expression,
   Identifier,
   Literal,
@@ -43,6 +44,8 @@ export function generate(ast: Statement): string {
       return generateAlterTable(ast);
     case "CreateIndexStatement":
       return generateCreateIndex(ast);
+    case "PragmaStatement":
+      return generatePragma(ast);
     default:
       throw new Error(`Unknown statement type: ${(ast as any).type}`);
   }
@@ -231,6 +234,20 @@ function generateCreateIndex(stmt: CreateIndexStatement): string {
   sql += " " + generateIdentifier(stmt.name);
   sql += " ON " + generateIdentifier(stmt.table);
   sql += " (" + stmt.columns.map(generateIdentifier).join(", ") + ")";
+
+  return sql;
+}
+
+function generatePragma(stmt: PragmaStatement): string {
+  let sql = "PRAGMA " + stmt.name;
+
+  if (stmt.arguments && stmt.arguments.length > 0) {
+    // Function-call style PRAGMA
+    sql += "(" + stmt.arguments.map(generateExpression).join(", ") + ")";
+  } else if (stmt.value) {
+    // Key=value style PRAGMA
+    sql += " = " + generateExpression(stmt.value);
+  }
 
   return sql;
 }

@@ -8,6 +8,9 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2025-10-08",
 	"compatibility_flags": ["nodejs_compat"],
+	"assets": {
+		"directory": "src/assets",
+	},
 	"migrations": [
 		{
 			"new_sqlite_classes": ["Storage", "Topology"],

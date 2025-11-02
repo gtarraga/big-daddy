@@ -817,6 +817,73 @@ describe("parser", () => {
     });
   });
 
+  describe("PRAGMA statements", () => {
+    it("should parse simple PRAGMA", () => {
+      const sql = "PRAGMA database_list;";
+      const ast = parse(sql);
+
+      expect(ast).toEqual({
+        type: "PragmaStatement",
+        name: "database_list",
+      });
+    });
+
+    it("should parse PRAGMA with key=value", () => {
+      const sql = "PRAGMA foreign_keys = ON;";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("PragmaStatement");
+      expect(ast).toEqual({
+        type: "PragmaStatement",
+        name: "foreign_keys",
+        value: { type: "Identifier", name: "ON" },
+      });
+    });
+
+    it("should parse PRAGMA with function call (string arguments)", () => {
+      const sql = "PRAGMA reshardTable('users', 10);";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("PragmaStatement");
+      expect(ast).toEqual({
+        type: "PragmaStatement",
+        name: "reshardTable",
+        arguments: [
+          { type: "Literal", value: "users", raw: "'users'" },
+          { type: "Literal", value: 10, raw: "10" },
+        ],
+      });
+    });
+
+    it("should parse PRAGMA with function call (identifier and number arguments)", () => {
+      const sql = "PRAGMA reshardTable(users, 10);";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("PragmaStatement");
+      expect((ast as any).arguments).toHaveLength(2);
+      expect((ast as any).arguments[0]).toEqual({
+        type: "Identifier",
+        name: "users",
+      });
+      expect((ast as any).arguments[1]).toEqual({
+        type: "Literal",
+        value: 10,
+        raw: "10",
+      });
+    });
+
+    it("should parse PRAGMA without semicolon", () => {
+      const sql = "PRAGMA database_list";
+      const ast = parse(sql);
+
+      expect(ast.type).toBe("PragmaStatement");
+      expect(ast).toEqual({
+        type: "PragmaStatement",
+        name: "database_list",
+      });
+    });
+  });
+
   describe("Placeholders", () => {
     it("should parse SELECT with placeholders", () => {
       const sql = "SELECT * FROM users WHERE id = ? AND name = ?";

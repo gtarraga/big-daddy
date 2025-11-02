@@ -64,7 +64,7 @@ const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName('my-database'));
 await topologyStub.create(3); // Create 3 storage nodes
 
 // Create a conductor for your database
-const conductor = createConductor('my-database', env);
+const conductor = createConductor('my-database', crypto.randomUUID(), env);
 
 // Create tables - metadata is automatically inferred from the schema
 await conductor.sql`

@@ -169,6 +169,15 @@ export interface CreateIndexStatement extends BaseNode {
   ifNotExists?: boolean
 }
 
+export interface PragmaStatement extends BaseNode {
+  type: 'PragmaStatement'
+  name: string
+  // For function-call style PRAGMAs like: PRAGMA reshardTable('table', 10)
+  arguments?: Expression[]
+  // For key=value style PRAGMAs like: PRAGMA foreign_keys = ON
+  value?: Expression
+}
+
 export type Statement =
   | SelectStatement
   | InsertStatement
@@ -177,6 +186,7 @@ export type Statement =
   | CreateTableStatement
   | AlterTableStatement
   | CreateIndexStatement
+  | PragmaStatement
 
 export interface Program extends BaseNode {
   type: 'Program'

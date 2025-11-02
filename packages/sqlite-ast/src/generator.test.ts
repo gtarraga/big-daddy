@@ -72,7 +72,14 @@ describe("generator", () => {
     "CREATE UNIQUE INDEX idx_email ON users (email)",
     "CREATE INDEX IF NOT EXISTS idx_email ON users (email)",
     "CREATE INDEX idx_name_email ON users (name, email)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique ON users (id)"
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique ON users (id)",
+
+    // PRAGMA statements
+    "PRAGMA database_list",
+    "PRAGMA foreign_keys = ON",
+    "PRAGMA foreign_keys = OFF",
+    "PRAGMA reshardTable('users', 10)",
+    "PRAGMA reshardTable(products, 5)"
   ];
 
   describe("round-trip generation", () => {
