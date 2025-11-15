@@ -59,6 +59,9 @@ describe("generator", () => {
     "CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)",
     "CREATE TABLE items (id INTEGER, name TEXT NULL)",
     "CREATE TABLE test (id INTEGER)",
+    "CREATE TABLE users (id INTEGER, name TEXT, PRIMARY KEY (id))",
+    "CREATE TABLE events (user_id INTEGER, tenant_id INTEGER, event_type TEXT, PRIMARY KEY (user_id, tenant_id))",
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, UNIQUE (email))",
 
     // ALTER TABLE statements
     "ALTER TABLE users ADD COLUMN phone TEXT",

@@ -20,8 +20,11 @@ function parseShardCountFromQuery(rawQuery: string): number | null {
  * Infers all sharding configuration from the table structure and optional SQL comments
  *
  * @example
- * // Default 1 shard
+ * // Default 1 shard with single-column PRIMARY KEY
  * const metadata = extractTableMetadata(statement, 'CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)');
+ *
+ * // Composite PRIMARY KEY
+ * const metadata = extractTableMetadata(statement, 'CREATE TABLE events (user_id INTEGER, tenant_id INTEGER, PRIMARY KEY (user_id, tenant_id))');
  *
  * // Specify 3 shards via comment - use format: CREATE TABLE users /&#42; SHARDS=3 &#42;/ (...)
  * const metadata = extractTableMetadata(statement, rawQuery);
@@ -32,15 +35,39 @@ export function extractTableMetadata(
 ): Omit<TableMetadata, 'created_at' | 'updated_at'> {
 	const tableName = statement.table.name;
 
-	// Find the primary key column
+	let primaryKey: string;
+	let primaryKeyType: string;
+	let shardKey: string;
+
+	// Check for column-level PRIMARY KEY constraint
 	const primaryKeyColumn = statement.columns.find((col) => col.constraints?.some((c) => c.constraint === 'PRIMARY KEY'));
 
-	if (!primaryKeyColumn) {
-		throw new Error(`CREATE TABLE ${tableName} must have a PRIMARY KEY column`);
-	}
+	if (primaryKeyColumn) {
+		// Single-column PRIMARY KEY
+		primaryKey = primaryKeyColumn.name.name;
+		primaryKeyType = primaryKeyColumn.dataType;
+		shardKey = primaryKey;
+	} else {
+		// Check for table-level PRIMARY KEY constraint from the AST
+		const tablePKConstraint = statement.constraints?.find(c => c.constraint === 'PRIMARY KEY');
 
-	const primaryKey = primaryKeyColumn.name.name;
-	const primaryKeyType = primaryKeyColumn.dataType;
+		if (tablePKConstraint && tablePKConstraint.columns) {
+			// Extract column names from the table-level PRIMARY KEY
+			const pkColumns = tablePKConstraint.columns.map(col => col.name);
+
+			// Store as comma-separated list for composite key
+			primaryKey = pkColumns.join(',');
+
+			// Use first column of composite key as shard key
+			shardKey = pkColumns[0];
+
+			// Find the type of the first column
+			const firstCol = statement.columns.find(col => col.name.name === shardKey);
+			primaryKeyType = firstCol?.dataType || 'INTEGER';
+		} else {
+			throw new Error(`CREATE TABLE ${tableName} must have a PRIMARY KEY column or constraint`);
+		}
+	}
 
 	// Parse shard count from SQL comment if provided
 	const numShards = (rawQuery && parseShardCountFromQuery(rawQuery)) || 1;
@@ -51,7 +78,7 @@ export function extractTableMetadata(
 	}
 
 	// Default sharding configuration
-	// - shard_key: use the primary key
+	// - shard_key: use the primary key (or first column of composite key)
 	// - num_shards: parsed from /* SHARDS=N */ comment, default 1
 	// - shard_strategy: hash (standard approach)
 	// - block_size: 500 rows per block
@@ -60,7 +87,7 @@ export function extractTableMetadata(
 		primary_key: primaryKey,
 		primary_key_type: primaryKeyType,
 		shard_strategy: 'hash',
-		shard_key: primaryKey,
+		shard_key: shardKey,
 		num_shards: numShards,
 		block_size: 500,
 	};

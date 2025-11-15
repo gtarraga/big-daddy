@@ -369,8 +369,22 @@ class Parser {
 
     this.expect("(", "punctuation");
 
-    // Parse column definitions
-    const columns = this.parseCommaSeparatedList(() => this.parseColumnDefinition());
+    // Parse column definitions and table constraints
+    const columns: ColumnDefinition[] = [];
+    const constraints: TableConstraint[] = [];
+
+    do {
+      if (this.match(",")) {
+        this.advance();
+      }
+
+      // Check if this is a table constraint (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY)
+      if (this.match("PRIMARY") || this.match("UNIQUE") || this.match("CHECK") || this.match("FOREIGN")) {
+        constraints.push(this.parseTableConstraint());
+      } else {
+        columns.push(this.parseColumnDefinition());
+      }
+    } while (this.match(","));
 
     this.expect(")", "punctuation");
 
@@ -381,8 +395,68 @@ class Parser {
       type: "CreateTableStatement",
       table,
       columns,
+      ...(constraints.length > 0 && { constraints }),
       ...(ifNotExists && { ifNotExists })
     };
+  }
+
+  private parseTableConstraint(): TableConstraint {
+    const token = this.current();
+
+    if (this.match("PRIMARY")) {
+      this.advance();
+      this.expect("KEY", "keyword");
+      this.expect("(", "punctuation");
+      const columns = this.parseCommaSeparatedList(() => this.parseIdentifier());
+      this.expect(")", "punctuation");
+
+      return {
+        type: "TableConstraint",
+        constraint: "PRIMARY KEY",
+        columns
+      };
+    } else if (this.match("UNIQUE")) {
+      this.advance();
+      this.expect("(", "punctuation");
+      const columns = this.parseCommaSeparatedList(() => this.parseIdentifier());
+      this.expect(")", "punctuation");
+
+      return {
+        type: "TableConstraint",
+        constraint: "UNIQUE",
+        columns
+      };
+    } else if (this.match("CHECK")) {
+      this.advance();
+      this.expect("(", "punctuation");
+      const expression = this.parseExpression();
+      this.expect(")", "punctuation");
+
+      return {
+        type: "TableConstraint",
+        constraint: "CHECK",
+        expression
+      };
+    } else if (this.match("FOREIGN")) {
+      this.advance();
+      this.expect("KEY", "keyword");
+      // For now, just parse FOREIGN KEY as a basic constraint
+      // Full FOREIGN KEY support would require more fields
+      this.expect("(", "punctuation");
+      const columns = this.parseCommaSeparatedList(() => this.parseIdentifier());
+      this.expect(")", "punctuation");
+
+      return {
+        type: "TableConstraint",
+        constraint: "FOREIGN KEY",
+        columns
+      };
+    }
+
+    throw new ParserError(
+      `Unexpected table constraint: ${token?.token}`,
+      token
+    );
   }
 
   private parseCreateIndex(unique: boolean): CreateIndexStatement {

@@ -743,6 +743,110 @@ describe("parser", () => {
         ],
       });
     });
+
+    it("should parse CREATE TABLE with table-level PRIMARY KEY (single column)", () => {
+      const sql =
+        "CREATE TABLE users (id INTEGER, name TEXT, PRIMARY KEY (id));";
+      const ast = parse(sql);
+
+      expect(ast).toEqual({
+        type: "CreateTableStatement",
+        table: { type: "Identifier", name: "users" },
+        columns: [
+          {
+            type: "ColumnDefinition",
+            name: { type: "Identifier", name: "id" },
+            dataType: "INTEGER",
+          },
+          {
+            type: "ColumnDefinition",
+            name: { type: "Identifier", name: "name" },
+            dataType: "TEXT",
+          },
+        ],
+        constraints: [
+          {
+            type: "TableConstraint",
+            constraint: "PRIMARY KEY",
+            columns: [{ type: "Identifier", name: "id" }],
+          },
+        ],
+      });
+    });
+
+    it("should parse CREATE TABLE with table-level PRIMARY KEY (composite)", () => {
+      const sql =
+        "CREATE TABLE events (user_id INTEGER, tenant_id INTEGER, event_type TEXT, PRIMARY KEY (user_id, tenant_id));";
+      const ast = parse(sql);
+
+      expect(ast).toEqual({
+        type: "CreateTableStatement",
+        table: { type: "Identifier", name: "events" },
+        columns: [
+          {
+            type: "ColumnDefinition",
+            name: { type: "Identifier", name: "user_id" },
+            dataType: "INTEGER",
+          },
+          {
+            type: "ColumnDefinition",
+            name: { type: "Identifier", name: "tenant_id" },
+            dataType: "INTEGER",
+          },
+          {
+            type: "ColumnDefinition",
+            name: { type: "Identifier", name: "event_type" },
+            dataType: "TEXT",
+          },
+        ],
+        constraints: [
+          {
+            type: "TableConstraint",
+            constraint: "PRIMARY KEY",
+            columns: [
+              { type: "Identifier", name: "user_id" },
+              { type: "Identifier", name: "tenant_id" },
+            ],
+          },
+        ],
+      });
+    });
+
+    it("should parse CREATE TABLE with table-level UNIQUE constraint", () => {
+      const sql =
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, UNIQUE (email));";
+      const ast = parse(sql);
+
+      expect(ast).toEqual({
+        type: "CreateTableStatement",
+        table: { type: "Identifier", name: "users" },
+        columns: [
+          {
+            type: "ColumnDefinition",
+            name: { type: "Identifier", name: "id" },
+            dataType: "INTEGER",
+            constraints: [
+              {
+                type: "ColumnConstraint",
+                constraint: "PRIMARY KEY",
+              },
+            ],
+          },
+          {
+            type: "ColumnDefinition",
+            name: { type: "Identifier", name: "email" },
+            dataType: "TEXT",
+          },
+        ],
+        constraints: [
+          {
+            type: "TableConstraint",
+            constraint: "UNIQUE",
+            columns: [{ type: "Identifier", name: "email" }],
+          },
+        ],
+      });
+    });
   });
 
   describe("ALTER TABLE statements", () => {

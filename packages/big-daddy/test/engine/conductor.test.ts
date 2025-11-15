@@ -567,4 +567,111 @@ describe('Conductor', () => {
 		const names = result.rows.map((r) => r.name).sort();
 		expect(names).toEqual(['Novel', 'Phone']);
 	});
+
+	describe('Composite Primary Key with _virtualShard', () => {
+		it('should create table with _virtualShard as first part of composite primary key', async () => {
+			const dbId = 'test-composite-pk-1';
+			const sql = await createConnection(dbId, { nodes: 2 }, env);
+
+			await sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)`;
+
+			// Verify topology stores original primary key
+			const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+			const topology = await topologyStub.getTopology();
+
+			expect(topology.tables[0]).toMatchObject({
+				table_name: 'users',
+				primary_key: 'id',
+				shard_key: 'id',
+			});
+
+			// Verify actual table schema in storage has composite primary key (_virtualShard, id)
+			for (const node of topology.storage_nodes) {
+				const storageStub = env.STORAGE.get(env.STORAGE.idFromName(node.node_id));
+				const schemaResult = await storageStub.executeQuery({
+					query: 'SELECT sql FROM sqlite_master WHERE type="table" AND name="users"',
+					queryType: 'SELECT',
+				});
+
+				if ('rows' in schemaResult && schemaResult.rows.length > 0) {
+					const createTableSQL = (schemaResult.rows[0] as any).sql;
+
+					// Should contain _virtualShard column
+					expect(createTableSQL).toContain('_virtualShard');
+
+					// Should have composite PRIMARY KEY (_virtualShard, id)
+					expect(createTableSQL).toMatch(/PRIMARY KEY\s*\(\s*_virtualShard\s*,\s*id\s*\)/i);
+				}
+			}
+		});
+
+		it('should preserve existing composite primary key and prepend _virtualShard', async () => {
+			const dbId = 'test-composite-pk-2';
+			const sql = await createConnection(dbId, { nodes: 2 }, env);
+
+			// Create table with existing composite primary key (user_id, tenant_id)
+			await sql`CREATE TABLE events (user_id INTEGER, tenant_id INTEGER, event_type TEXT, PRIMARY KEY (user_id, tenant_id))`;
+
+			// Verify topology
+			const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+			const topology = await topologyStub.getTopology();
+
+			expect(topology.tables[0]).toMatchObject({
+				table_name: 'events',
+				primary_key: 'user_id,tenant_id', // Should store composite key
+				shard_key: 'user_id', // Uses first column of composite key
+			});
+
+			// Verify actual table schema has (_virtualShard, user_id, tenant_id) as PRIMARY KEY
+			for (const node of topology.storage_nodes) {
+				const storageStub = env.STORAGE.get(env.STORAGE.idFromName(node.node_id));
+				const schemaResult = await storageStub.executeQuery({
+					query: 'SELECT sql FROM sqlite_master WHERE type="table" AND name="events"',
+					queryType: 'SELECT',
+				});
+
+				if ('rows' in schemaResult && schemaResult.rows.length > 0) {
+					const createTableSQL = (schemaResult.rows[0] as any).sql;
+
+					// Should have _virtualShard prepended to composite primary key
+					expect(createTableSQL).toMatch(/PRIMARY KEY\s*\(\s*_virtualShard\s*,\s*user_id\s*,\s*tenant_id\s*\)/i);
+				}
+			}
+		});
+
+		it('should allow duplicate primary keys on different shards (same node)', async () => {
+			const dbId = 'test-duplicate-pk';
+			const sql = await createConnection(dbId, { nodes: 2 }, env);
+
+			await sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
+
+			// Insert same id=100 on different virtual shards (they'll end up on same physical node during resharding)
+			// This tests the composite key (_virtualShard, id) prevents conflicts
+			await sql`INSERT INTO users (id, name) VALUES (${100}, ${'Alice'})`;
+
+			// Get topology to manually insert to different shard
+			const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+			const topology = await topologyStub.getTopology();
+
+			// Manually insert directly to storage with different _virtualShard value
+			// This simulates what happens during resharding when copying data
+			const storageStub = env.STORAGE.get(env.STORAGE.idFromName(topology.storage_nodes[0].node_id));
+
+			// Insert with _virtualShard=1 (different from default shard 0)
+			await storageStub.executeQuery({
+				query: 'INSERT INTO users (_virtualShard, id, name) VALUES (?, ?, ?)',
+				params: [1, 100, 'Bob'],
+				queryType: 'INSERT',
+			});
+
+			// Both rows should exist (no primary key conflict)
+			const allRows = await storageStub.executeQuery({
+				query: 'SELECT * FROM users WHERE id = ?',
+				params: [100],
+				queryType: 'SELECT',
+			});
+
+			expect((allRows as any).rows).toHaveLength(2);
+		});
+	});
 });

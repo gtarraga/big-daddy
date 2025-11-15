@@ -23,7 +23,8 @@ import type {
   JoinClause,
   OrderByClause,
   ColumnDefinition,
-  ColumnConstraint
+  ColumnConstraint,
+  TableConstraint
 } from "./types";
 
 /**
@@ -183,9 +184,34 @@ function generateCreateTable(stmt: CreateTableStatement): string {
   }
 
   sql += " " + generateIdentifier(stmt.table);
-  sql += " (" + stmt.columns.map(generateColumnDefinition).join(", ") + ")";
+  sql += " (";
+
+  // Generate columns
+  sql += stmt.columns.map(generateColumnDefinition).join(", ");
+
+  // Generate table constraints if any
+  if (stmt.constraints && stmt.constraints.length > 0) {
+    sql += ", " + stmt.constraints.map(generateTableConstraint).join(", ");
+  }
+
+  sql += ")";
 
   return sql;
+}
+
+function generateTableConstraint(constraint: TableConstraint): string {
+  switch (constraint.constraint) {
+    case "PRIMARY KEY":
+      return "PRIMARY KEY (" + constraint.columns!.map(generateIdentifier).join(", ") + ")";
+    case "UNIQUE":
+      return "UNIQUE (" + constraint.columns!.map(generateIdentifier).join(", ") + ")";
+    case "CHECK":
+      return "CHECK (" + generateExpression(constraint.expression!) + ")";
+    case "FOREIGN KEY":
+      return "FOREIGN KEY (" + constraint.columns!.map(generateIdentifier).join(", ") + ")";
+    default:
+      throw new Error(`Unknown table constraint: ${constraint.constraint}`);
+  }
 }
 
 function generateAlterTable(stmt: AlterTableStatement): string {

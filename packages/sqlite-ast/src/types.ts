@@ -144,10 +144,18 @@ export interface ColumnConstraint extends BaseNode {
   value?: Expression
 }
 
+export interface TableConstraint extends BaseNode {
+  type: 'TableConstraint'
+  constraint: 'PRIMARY KEY' | 'UNIQUE' | 'CHECK' | 'FOREIGN KEY'
+  columns?: Identifier[]  // For PRIMARY KEY and UNIQUE
+  expression?: Expression  // For CHECK
+}
+
 export interface CreateTableStatement extends BaseNode {
   type: 'CreateTableStatement'
   table: Identifier
   columns: ColumnDefinition[]
+  constraints?: TableConstraint[]
   ifNotExists?: boolean
 }
 

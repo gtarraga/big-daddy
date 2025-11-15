@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createConnection } from '../../src/index';
+import { queueHandler } from '../../src/queue-consumer';
+import type { ReshardTableJob, MessageBatch } from '../../src/engine/queue/types';
 
 /**
  * End-to-End Resharding Tests
@@ -9,6 +11,27 @@ import { createConnection } from '../../src/index';
  * for data insertion, which is how data actually enters the system in production.
  * This ensures we catch real issues, not just isolated component bugs.
  */
+
+/**
+ * Helper function to manually process resharding queue jobs
+ * In production, these would be processed by the queue consumer automatically,
+ * but in tests we need to manually trigger them.
+ */
+async function processReshardingJob(dbId: string, job: ReshardTableJob): Promise<void> {
+	const batch: MessageBatch<ReshardTableJob> = {
+		queue: 'vitess-index-jobs',
+		messages: [
+			{
+				id: `test-${Date.now()}-${Math.random()}`,
+				timestamp: new Date(),
+				body: job,
+				attempts: 1,
+			},
+		],
+	};
+
+	await queueHandler(batch as any, env, job.correlation_id);
+}
 
 describe('E2E Resharding: Insert via Conductor + Verify', () => {
 	it('should insert 100 users via conductor, then reshard 1→3 shards with correct verification', async () => {
@@ -51,28 +74,49 @@ describe('E2E Resharding: Insert via Conductor + Verify', () => {
 		const topologyId = env.TOPOLOGY.idFromName(dbId);
 		const topologyStub = env.TOPOLOGY.get(topologyId);
 
-		// Wait for resharding to complete (poll with timeout)
+		// Get the resharding job that was queued
 		let reshardingState = await topologyStub.getReshardingState('users');
-		let attempts = 0;
-		const maxAttempts = 50; // ~5 seconds with 100ms delays
-		while (reshardingState?.status !== 'complete' && reshardingState?.status !== 'failed' && attempts < maxAttempts) {
-			await new Promise(resolve => setTimeout(resolve, 100));
+		console.log(`Initial resharding state:`, reshardingState);
+
+		// Extract job details from the topology
+		const topology = await topologyStub.getTopology();
+		const userShards = topology.table_shards.filter(s => s.table_name === 'users');
+		const sourceShardId = userShards.find(s => s.status === 'active' && s.shard_id === 0)?.shard_id || 0;
+		const targetShardIds = userShards.filter(s => s.status === 'pending').map(s => s.shard_id);
+
+		// Create and manually process the resharding job
+		if (reshardingState && targetShardIds.length > 0) {
+			const reshardJob: ReshardTableJob = {
+				type: 'reshard_table',
+				database_id: dbId,
+				table_name: 'users',
+				source_shard_id: sourceShardId,
+				target_shard_ids: targetShardIds,
+				shard_key: 'id',
+				shard_strategy: 'hash',
+				change_log_id: reshardingState.change_log_id || `reshard-${Date.now()}`,
+				created_at: new Date().toISOString(),
+				correlation_id: crypto.randomUUID(),
+			};
+
+			console.log('Manually processing resharding job...');
+			await processReshardingJob(dbId, reshardJob);
+
 			reshardingState = await topologyStub.getReshardingState('users');
-			attempts++;
+			console.log(`Resharding job status after processing: ${reshardingState?.status}`);
 		}
 
-		console.log(`Resharding job status: ${reshardingState?.status}`);
 		expect(reshardingState?.status).toBe('complete');
 		expect(reshardingState?.error_message).toBeNull();
 
 		// Verify topology shows new shards
 		const topologyAfter = await topologyStub.getTopology();
-		const userShards = topologyAfter.table_shards.filter(s => s.table_name === 'users');
-		console.log(`Shard count after resharding: ${userShards.length}`);
-		expect(userShards.length).toBeGreaterThanOrEqual(4); // Original 1 + new 3
+		const userShardsAfterReshard = topologyAfter.table_shards.filter(s => s.table_name === 'users');
+		console.log(`Shard count after resharding: ${userShardsAfterReshard.length}`);
+		expect(userShardsAfterReshard.length).toBeGreaterThanOrEqual(4); // Original 1 + new 3
 
 		// Verify the new shards were created and are active
-		const newShards = userShards.filter(s => s.shard_id > 0 && s.status === 'active');
+		const newShards = userShardsAfterReshard.filter(s => s.shard_id > 0 && s.status === 'active');
 		console.log(`New active shards: ${newShards.length}`);
 		expect(newShards.length).toBeGreaterThanOrEqual(3);
 
@@ -127,30 +171,51 @@ describe('E2E Resharding: Insert via Conductor + Verify', () => {
 		const topologyId = env.TOPOLOGY.idFromName(dbId);
 		const topologyStub = env.TOPOLOGY.get(topologyId);
 
-		// Wait for resharding to complete (poll with timeout)
+		// Get the resharding job that was queued
 		let reshardingState = await topologyStub.getReshardingState('products');
-		let attempts = 0;
-		const maxAttempts = 50; // ~5 seconds with 100ms delays
-		while (reshardingState?.status !== 'complete' && reshardingState?.status !== 'failed' && attempts < maxAttempts) {
-			await new Promise(resolve => setTimeout(resolve, 100));
+		console.log(`Initial resharding state:`, reshardingState);
+
+		// Extract job details from the topology
+		const topology = await topologyStub.getTopology();
+		const productShards = topology.table_shards.filter(s => s.table_name === 'products');
+		const sourceShardId = productShards.find(s => s.status === 'active' && s.shard_id === 0)?.shard_id || 0;
+		const targetShardIds = productShards.filter(s => s.status === 'pending').map(s => s.shard_id);
+
+		// Create and manually process the resharding job
+		if (reshardingState && targetShardIds.length > 0) {
+			const reshardJob: ReshardTableJob = {
+				type: 'reshard_table',
+				database_id: dbId,
+				table_name: 'products',
+				source_shard_id: sourceShardId,
+				target_shard_ids: targetShardIds,
+				shard_key: 'id',
+				shard_strategy: 'hash',
+				change_log_id: reshardingState.change_log_id || `reshard-${Date.now()}`,
+				created_at: new Date().toISOString(),
+				correlation_id: crypto.randomUUID(),
+			};
+
+			console.log('Manually processing resharding job...');
+			await processReshardingJob(dbId, reshardJob);
+
 			reshardingState = await topologyStub.getReshardingState('products');
-			attempts++;
+			console.log(`Resharding job status after processing: ${reshardingState?.status}`);
 		}
 
-		console.log(`Resharding job status: ${reshardingState?.status}`);
 		expect(reshardingState?.status).toBe('complete');
 		expect(reshardingState?.error_message).toBeNull();
 
 		// Verify topology shows new shards
 		const topologyAfter = await topologyStub.getTopology();
-		const productShards = topologyAfter.table_shards.filter(s => s.table_name === 'products');
-		console.log(`Shard count after resharding: ${productShards.length}`);
-		expect(productShards.length).toBeGreaterThanOrEqual(6); // Original 1 + new 5
+		const productShardsAfterReshard = topologyAfter.table_shards.filter(s => s.table_name === 'products');
+		console.log(`Shard count after resharding: ${productShardsAfterReshard.length}`);
+		expect(productShardsAfterReshard.length).toBeGreaterThanOrEqual(6); // Original 1 + new 5
 
 		// Verify the new shards were created and are active
-		const newShards = productShards.filter(s => s.shard_id > 0 && s.status === 'active');
-		console.log(`New active shards: ${newShards.length}`);
-		expect(newShards.length).toBeGreaterThanOrEqual(5);
+		const newShardsProducts = productShardsAfterReshard.filter(s => s.shard_id > 0 && s.status === 'active');
+		console.log(`New active shards: ${newShardsProducts.length}`);
+		expect(newShardsProducts.length).toBeGreaterThanOrEqual(5);
 
 		// Verify post-reshard
 		products = await sql`SELECT * FROM products`;
@@ -198,28 +263,49 @@ describe('E2E Resharding: Insert via Conductor + Verify', () => {
 		const topologyId = env.TOPOLOGY.idFromName(dbId);
 		const topologyStub = env.TOPOLOGY.get(topologyId);
 
-		// Wait for resharding to complete (poll with timeout)
+		// Get the resharding job that was queued
 		let reshardingState = await topologyStub.getReshardingState('users');
-		let attempts = 0;
-		const maxAttempts = 50; // ~5 seconds with 100ms delays
-		while (reshardingState?.status !== 'complete' && reshardingState?.status !== 'failed' && attempts < maxAttempts) {
-			await new Promise(resolve => setTimeout(resolve, 100));
+		console.log(`Initial resharding state:`, reshardingState);
+
+		// Extract job details from the topology
+		const topology = await topologyStub.getTopology();
+		const userShards = topology.table_shards.filter(s => s.table_name === 'users');
+		const sourceShardId = userShards.find(s => s.status === 'active' && s.shard_id === 0)?.shard_id || 0;
+		const targetShardIds = userShards.filter(s => s.status === 'pending').map(s => s.shard_id);
+
+		// Create and manually process the resharding job
+		if (reshardingState && targetShardIds.length > 0) {
+			const reshardJob: ReshardTableJob = {
+				type: 'reshard_table',
+				database_id: dbId,
+				table_name: 'users',
+				source_shard_id: sourceShardId,
+				target_shard_ids: targetShardIds,
+				shard_key: 'id',
+				shard_strategy: 'hash',
+				change_log_id: reshardingState.change_log_id || `reshard-${Date.now()}`,
+				created_at: new Date().toISOString(),
+				correlation_id: crypto.randomUUID(),
+			};
+
+			console.log('Manually processing resharding job...');
+			await processReshardingJob(dbId, reshardJob);
+
 			reshardingState = await topologyStub.getReshardingState('users');
-			attempts++;
+			console.log(`Resharding job status after processing: ${reshardingState?.status}`);
 		}
 
-		console.log(`Resharding job status: ${reshardingState?.status}`);
 		expect(reshardingState?.status).toBe('complete');
 		expect(reshardingState?.error_message).toBeNull();
 
 		// Verify topology shows new shards
 		const topologyAfter = await topologyStub.getTopology();
-		const userShards = topologyAfter.table_shards.filter(s => s.table_name === 'users');
-		console.log(`Shard count after resharding: ${userShards.length}`);
-		expect(userShards.length).toBeGreaterThanOrEqual(4); // Original 1 + new 3
+		const userShardsAfter = topologyAfter.table_shards.filter(s => s.table_name === 'users');
+		console.log(`Shard count after resharding: ${userShardsAfter.length}`);
+		expect(userShardsAfter.length).toBeGreaterThanOrEqual(4); // Original 1 + new 3
 
 		// Verify the new shards were created and are active
-		const newShards = userShards.filter(s => s.shard_id > 0 && s.status === 'active');
+		const newShards = userShardsAfter.filter(s => s.shard_id > 0 && s.status === 'active');
 		console.log(`New active shards: ${newShards.length}`);
 		expect(newShards.length).toBeGreaterThanOrEqual(3);
 

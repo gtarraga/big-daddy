@@ -9,6 +9,8 @@ import type {
 	CreateIndexStatement,
 	PragmaStatement,
 	BinaryExpression,
+	ColumnDefinition,
+	TableConstraint,
 } from '@databases/sqlite-ast';
 import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../logger';
@@ -290,9 +292,9 @@ export class ConductorClient {
 			},
 		});
 
-		// Inject _virtualShard column into the CREATE TABLE query
-		// This hidden column ensures shard isolation at the storage level
-		const modifiedQuery = this.injectVirtualShardColumn(query);
+		// Inject _virtualShard column and create composite primary key
+		// This ensures shard isolation and allows duplicate PKs on different shards (same node)
+		const modifiedQuery = this.injectVirtualShardColumn(statement);
 
 		// Execute CREATE TABLE on all storage nodes in parallel (use actual node IDs from topology)
 		await Promise.all(
@@ -1234,28 +1236,103 @@ export class ConductorClient {
 	 * @param query - Original CREATE TABLE query from user
 	 * @returns Modified query with _virtualShard INTEGER NOT NULL DEFAULT 0 column
 	 */
-	private injectVirtualShardColumn(query: string): string {
-		// Match CREATE [TEMP] TABLE [IF NOT EXISTS] table_name (
-		const tableDefRegex = /^(CREATE\s+(?:TEMP|TEMPORARY)?\s*TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s*\()([\s\S]*)(\);?\s*$)/i;
+	/**
+	 * Inject _virtualShard column and create composite primary key
+	 *
+	 * This method modifies the CREATE TABLE AST to:
+	 * 1. Add _virtualShard INTEGER NOT NULL column as the first column
+	 * 2. Convert single-column PRIMARY KEY to composite: (_virtualShard, original_pk)
+	 * 3. For table-level PRIMARY KEY, prepend _virtualShard to the column list
+	 *
+	 * This allows the same primary key value to exist on multiple shards within
+	 * the same physical storage node, which is critical for resharding operations.
+	 */
+	private injectVirtualShardColumn(statement: CreateTableStatement): string {
+		const modifiedStatement = JSON.parse(JSON.stringify(statement)) as CreateTableStatement;
 
-		const match = query.match(tableDefRegex);
-		if (!match) {
-			// If we can't parse it, return original query (shouldn't happen in normal cases)
-			logger.warn('Could not parse CREATE TABLE query for _virtualShard injection', { query });
-			return query;
+		// Track primary key columns
+		const primaryKeyColumns: string[] = [];
+
+		// Check for column-level PRIMARY KEY constraint
+		for (let i = 0; i < modifiedStatement.columns.length; i++) {
+			const col = modifiedStatement.columns[i];
+			const pkConstraintIndex = col.constraints?.findIndex(c => c.constraint === 'PRIMARY KEY');
+
+			if (pkConstraintIndex !== undefined && pkConstraintIndex >= 0) {
+				// Found column-level PRIMARY KEY
+				primaryKeyColumns.push(col.name.name);
+
+				// Remove the PRIMARY KEY constraint from this column
+				col.constraints?.splice(pkConstraintIndex, 1);
+				break;
+			}
 		}
 
-		const [, prefix, columnDefs, suffix] = match;
+		// Check for table-level PRIMARY KEY constraint
+		if (modifiedStatement.constraints) {
+			const pkConstraintIndex = modifiedStatement.constraints.findIndex(c => c.constraint === 'PRIMARY KEY');
 
-		// Add _virtualShard column before the closing parenthesis
-		// Use a comma if there are existing columns
-		const hasColumns = columnDefs.trim().length > 0;
-		const virtualShardDef = '_virtualShard INTEGER NOT NULL DEFAULT 0';
-		const joinChar = hasColumns ? ',' : '';
+			if (pkConstraintIndex >= 0) {
+				const pkConstraint = modifiedStatement.constraints[pkConstraintIndex];
 
-		const modifiedQuery = `${prefix}${columnDefs}${joinChar}\n\t${virtualShardDef}${suffix}`;
+				// Extract column names from the table-level PRIMARY KEY
+				if (pkConstraint.columns) {
+					primaryKeyColumns.push(...pkConstraint.columns.map(col => col.name));
+				}
 
-		return modifiedQuery;
+				// Remove the original PRIMARY KEY constraint (we'll add a new one)
+				modifiedStatement.constraints.splice(pkConstraintIndex, 1);
+			}
+		}
+
+		// Add _virtualShard column at the beginning
+		const virtualShardColumn: ColumnDefinition = {
+			type: 'ColumnDefinition',
+			name: {
+				type: 'Identifier',
+				name: '_virtualShard',
+			},
+			dataType: 'INTEGER',
+			constraints: [
+				{
+					type: 'ColumnConstraint',
+					constraint: 'NOT NULL',
+				},
+				{
+					type: 'ColumnConstraint',
+					constraint: 'DEFAULT',
+					value: {
+						type: 'Literal',
+						value: 0,
+						raw: '0',
+					},
+				},
+			],
+		};
+
+		// Insert _virtualShard as the first column
+		modifiedStatement.columns.unshift(virtualShardColumn);
+
+		// Create composite PRIMARY KEY constraint with _virtualShard prepended
+		if (primaryKeyColumns.length > 0) {
+			const compositePKConstraint: TableConstraint = {
+				type: 'TableConstraint',
+				constraint: 'PRIMARY KEY',
+				columns: [
+					{ type: 'Identifier', name: '_virtualShard' },
+					...primaryKeyColumns.map(name => ({ type: 'Identifier' as const, name })),
+				],
+			};
+
+			// Add or initialize constraints array
+			if (!modifiedStatement.constraints) {
+				modifiedStatement.constraints = [];
+			}
+			modifiedStatement.constraints.push(compositePKConstraint);
+		}
+
+		// Generate SQL from modified AST
+		return generate(modifiedStatement);
 	}
 }
 

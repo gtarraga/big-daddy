@@ -1,6 +1,4 @@
 import { DurableObject } from 'cloudflare:workers';
-import { parse } from '@databases/sqlite-ast';
-import type { CreateTableStatement } from '@databases/sqlite-ast';
 import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../logger';
 
@@ -92,11 +90,6 @@ export class Storage extends DurableObject<Env> {
 					});
 
 					totalRowsAffected += rowsAffected;
-
-					// Auto-create index on _virtualShard for new tables
-					if (batch.queryType === 'CREATE') {
-						this.createVirtualShardIndexIfNeeded(batch.query);
-					}
 				}
 
 				const duration = Date.now() - startTime;
@@ -161,53 +154,5 @@ export class Storage extends DurableObject<Env> {
 		// This is a placeholder implementation
 		// You may need to use backup/restore mechanisms instead
 		return { success: true };
-	}
-
-	/**
-	 * Auto-create index on _virtualShard column after table creation
-	 *
-	 * This is called automatically for every CREATE TABLE statement.
-	 * It extracts the table name and creates an index on the _virtualShard column
-	 * to ensure fast filtering by virtual shard during query execution.
-	 *
-	 * @param createTableQuery - The CREATE TABLE query that was just executed
-	 */
-	private createVirtualShardIndexIfNeeded(createTableQuery: string): void {
-		try {
-			// Parse the CREATE TABLE query to extract table name safely
-			const ast = parse(createTableQuery);
-			const statement = ast.statements[0] as CreateTableStatement;
-
-			if (!statement || statement.type !== 'CreateTableStatement') {
-				logger.warn('Could not parse CREATE TABLE statement for _virtualShard index creation', {
-					query: createTableQuery,
-				});
-				return;
-			}
-
-			const tableName = statement.table.name;
-			const indexName = `idx_${tableName}_virtual_shard`;
-
-			// Create the index - use IF NOT EXISTS to be idempotent
-			const createIndexSQL = `CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName}(_virtualShard)`;
-
-			logger.debug('Creating _virtualShard index', {
-				tableName,
-				indexName,
-			});
-
-			this.ctx.storage.sql.exec(createIndexSQL);
-
-			logger.debug('_virtualShard index created successfully', {
-				tableName,
-				indexName,
-			});
-		} catch (error) {
-			// Log the error but don't throw - this is a non-blocking optimization
-			logger.warn('Failed to create _virtualShard index', {
-				error: error instanceof Error ? error.message : String(error),
-				query: createTableQuery,
-			});
-		}
 	}
 }
