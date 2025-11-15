@@ -11,139 +11,200 @@
  * 3. Update index status to 'ready' or 'failed'
  */
 
+import { Effect, Data } from 'effect';
 import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../../logger';
+import { createConductor } from '../../index';
 import type { IndexBuildJob } from '../queue/types';
 
-export async function processBuildIndexJob(job: IndexBuildJob, env: Env, correlationId?: string): Promise<void> {
-	const columnList = job.columns.join(', ');
-	logger.setTags({
-		table: job.table_name,
-		indexName: job.index_name,
-	});
+/**
+ * Error types for build index operations
+ */
+export class NoShardsFoundError extends Data.TaggedError('NoShardsFoundError')<{
+	tableName: string;
+}> {}
 
-	logger.info('Building virtual index', {
-		indexName: job.index_name,
-		table: job.table_name,
-		columns: columnList,
-	});
+export class TopologyFetchError extends Data.TaggedError('TopologyFetchError')<{
+	databaseId: string;
+	cause?: unknown;
+}> {}
 
+export class IndexEntriesUpsertError extends Data.TaggedError('IndexEntriesUpsertError')<{
+	indexName: string;
+	cause?: unknown;
+}> {}
+
+export class IndexStatusUpdateError extends Data.TaggedError('IndexStatusUpdateError')<{
+	indexName: string;
+	status: 'ready' | 'failed';
+	cause?: unknown;
+}> {}
+
+/**
+ * Build a composite key value from row data
+ */
+function buildKeyValue(row: Record<string, any>, columns: string[]): string | null {
+	if (columns.length === 1) {
+		const value: any = row[columns[0]!];
+		// Skip NULL values
+		if (value === null || value === undefined) {
+			return null;
+		}
+		return String(value);
+	} else {
+		// Composite index - build key from all column values
+		const values = columns.map((col) => row[col]);
+		// Skip if any value is NULL
+		if (values.some((v) => v === null || v === undefined)) {
+			return null;
+		}
+		// Store as JSON array
+		return JSON.stringify(values);
+	}
+}
+
+/**
+ * Build index Effect implementation
+ *
+ * Queries distinct values via the conductor (which handles shard routing).
+ * Then creates index entries mapping values to all shards containing the table.
+ */
+function processBuildIndexJobEffect(
+	job: IndexBuildJob,
+	env: Env,
+	correlationId?: string
+): Effect.Effect<
+	void,
+	NoShardsFoundError | TopologyFetchError | IndexEntriesUpsertError | IndexStatusUpdateError
+> {
 	const topologyId = env.TOPOLOGY.idFromName(job.database_id);
 	const topologyStub = env.TOPOLOGY.get(topologyId);
 
-	try {
-		// 1. Get all shards for this table from topology
-		const topology = await topologyStub.getTopology();
-		const tableShards = topology.table_shards.filter((s) => s.table_name === job.table_name);
+	return Effect.gen(function* () {
+		logger.setTags({ table: job.table_name, indexName: job.index_name });
 
-		if (tableShards.length === 0) {
-			logger.error('No shards found for table', { table: job.table_name });
-			throw new Error(`No shards found for table '${job.table_name}'`);
-		}
+		const conductor = createConductor(job.database_id, correlationId ?? '', env);
 
-		logger.info('Found shards for table', {
-			shardCount: tableShards.length,
+		// 1. Query distinct values with shard info via conductor
+		// The _virtualShard column tracks which shard each row is on
+		const columnList = job.columns.join(', ');
+		const distinctQuery = `SELECT DISTINCT ${columnList}, _virtualShard FROM ${job.table_name}`;
+
+		const queryResult = yield* Effect.tryPromise({
+			try: async () => {
+				const result = await conductor.sql([distinctQuery] as any);
+				return result as unknown;
+			},
+			catch: (error) =>
+				new TopologyFetchError({
+					databaseId: job.database_id,
+					cause: error instanceof Error ? error.message : String(error),
+				}),
 		});
 
-		// 2. Collect all distinct values from all shards
-		// Map: composite key value → Set<shard_id>
+		// Extract rows from QueryResult
+		const resultRows = ((queryResult as any)?.results?.[0]?.rows || (queryResult as any)?.rows || []) as Record<
+			string,
+			any
+		>[];
+
+		// 2. Build index entries mapping distinct values to their shards
+		// Group by value to collect all shards that contain each distinct value
 		const valueToShards = new Map<string, Set<number>>();
 
-		for (const shard of tableShards) {
-			try {
-				// Get storage stub for this shard
-				const storageId = env.STORAGE.idFromName(shard.node_id);
-				const storageStub = env.STORAGE.get(storageId);
+		for (const row of resultRows) {
+			const keyValue = buildKeyValue(row, job.columns);
+			if (keyValue === null) continue;
 
-				// Query for all distinct combinations of indexed columns
-				const result = await storageStub.executeQuery({
-					query: `SELECT DISTINCT ${columnList} FROM ${job.table_name}`,
-					params: [],
-					queryType: 'SELECT',
-				});
+			const shardId = row._virtualShard as number;
 
-				// Type guard: single query always returns QueryResult
-				if (!('rows' in result)) {
-					throw new Error('Expected QueryResult but got BatchQueryResult');
-				}
-
-				// Extract rows with proper typing to avoid deep instantiation with Disposable types
-				const resultRows = (result as any).rows as Record<string, any>[];
-
-				// For each distinct combination, add this shard to its shard set
-				for (const row of resultRows) {
-					// Build composite key from all indexed columns
-					// For single column: just the value
-					// For multiple columns: JSON array of values
-					let keyValue: string;
-
-					if (job.columns.length === 1) {
-						const value: any = row[job.columns[0]!];
-						// Skip NULL values
-						if (value === null || value === undefined) {
-							continue;
-						}
-						keyValue = String(value);
-					} else {
-						// Composite index - build key from all column values
-						const values = job.columns.map(col => row[col]);
-						// Skip if any value is NULL
-						if (values.some(v => v === null || v === undefined)) {
-							continue;
-						}
-						// Store as JSON array
-						keyValue = JSON.stringify(values);
-					}
-
-					if (!valueToShards.has(keyValue)) {
-						valueToShards.set(keyValue, new Set());
-					}
-
-					valueToShards.get(keyValue)!.add(shard.shard_id);
-				}
-
-				console.log(`Processed shard ${shard.shard_id}, found values for index`);
-			} catch (error) {
-				console.error(`Error querying shard ${shard.shard_id}:`, error);
-				throw new Error(`Failed to query shard ${shard.shard_id}: ${error instanceof Error ? error.message : String(error)}`);
+			if (!valueToShards.has(keyValue)) {
+				valueToShards.set(keyValue, new Set());
 			}
+			valueToShards.get(keyValue)!.add(shardId);
 		}
 
-		logger.info('Collected distinct values from shards', {
-			distinctValues: valueToShards.size,
-		});
-
-		// 3. Create index entries in batch
 		const entries = Array.from(valueToShards.entries()).map(([keyValue, shardIdSet]) => ({
 			keyValue,
-			shardIds: Array.from(shardIdSet).sort((a, b) => a - b), // Sort for consistency
+			shardIds: Array.from(shardIdSet).sort((a, b) => a - b),
 		}));
 
 		if (entries.length > 0) {
-			const result = await topologyStub.batchUpsertIndexEntries(job.index_name, entries);
-			logger.info('Created index entries', {
-				entryCount: result.count,
+			yield* Effect.tryPromise({
+				try: () => topologyStub.batchUpsertIndexEntries(job.index_name, entries),
+				catch: (error) => new IndexEntriesUpsertError({ indexName: job.index_name, cause: error }),
 			});
 		}
 
 		// 4. Update index status to 'ready'
-		await topologyStub.updateIndexStatus(job.index_name, 'ready');
-
-		logger.info('Index build complete', {
-			indexName: job.index_name,
-			uniqueValues: entries.length,
-			status: 'ready',
+		yield* Effect.tryPromise({
+			try: () => topologyStub.updateIndexStatus(job.index_name, 'ready'),
+			catch: (error) => new IndexStatusUpdateError({ indexName: job.index_name, status: 'ready', cause: error }),
 		});
-	} catch (error) {
-		logger.error('Failed to build index', {
+	}).pipe(
+		// Add context to all logs and errors in this Effect
+		Effect.annotateLogs({
 			indexName: job.index_name,
-			error: error instanceof Error ? error.message : String(error),
-		});
+			table: job.table_name,
+			databaseId: job.database_id,
+			correlationId: correlationId ?? 'none',
+		})
+	);
+}
 
-		// Update index status to 'failed'
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		await topologyStub.updateIndexStatus(job.index_name, 'failed', errorMessage);
-
-		throw error;
+/**
+ * Convert typed error to user-friendly message
+ */
+function errorToMessage(
+	error: NoShardsFoundError | TopologyFetchError | IndexEntriesUpsertError | IndexStatusUpdateError
+): string {
+	if (error instanceof NoShardsFoundError) {
+		return `No shards found for table '${error.tableName}'`;
 	}
+	if (error instanceof TopologyFetchError) {
+		const causeStr = error.cause ? `: ${error.cause}` : '';
+		return `Failed to fetch topology for database '${error.databaseId}'${causeStr}`;
+	}
+	if (error instanceof IndexEntriesUpsertError) {
+		return `Failed to upsert index entries for '${error.indexName}'`;
+	}
+	// IndexStatusUpdateError
+	return `Failed to update index status to '${error.status}' for '${error.indexName}'`;
+}
+
+/**
+ * Process build index job (Promise wrapper for backward compatibility)
+ *
+ * This wraps the Effect version and converts it back to a Promise.
+ * Errors are caught and the index status is updated to 'failed' on error.
+ */
+export async function processBuildIndexJob(
+	job: IndexBuildJob,
+	env: Env,
+	correlationId?: string
+): Promise<void> {
+	return withLogTags({ source: 'QueueConsumer' }, async () => {
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(job.database_id));
+
+		const effect = processBuildIndexJobEffect(job, env, correlationId).pipe(
+			Effect.catchAll((error) =>
+				Effect.gen(function* () {
+					const errorMessage = errorToMessage(error);
+
+					// Update index status to 'failed'
+					yield* Effect.tryPromise({
+						try: () => topologyStub.updateIndexStatus(job.index_name, 'failed', errorMessage),
+						catch: () => new Error('Failed to update index status to failed'),
+					});
+
+					// Error will be logged automatically with context annotations
+					return yield* Effect.fail(new Error(errorMessage));
+				})
+			),
+			// Add source annotation to all logs and errors
+			Effect.annotateLogs({ source: 'QueueConsumer', jobType: 'build_index' })
+		);
+
+		return Effect.runPromise(effect);
+	});
 }
