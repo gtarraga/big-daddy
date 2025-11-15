@@ -12,6 +12,7 @@ import type {
 	ColumnDefinition,
 	TableConstraint,
 } from '@databases/sqlite-ast';
+import { Effect, Data } from 'effect';
 import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../logger';
 import type { Storage, QueryResult as StorageQueryResult, QueryType } from './storage';
@@ -20,6 +21,29 @@ import { extractTableName, getQueryType, buildQuery } from './utils/ast-utils';
 import { extractTableMetadata } from './utils/schema-utils';
 import type { IndexJob, IndexMaintenanceJob, ReshardTableJob } from './queue/types';
 import { TopologyCache, type CacheStats } from './utils/topology-cache';
+
+/**
+ * Error types for CREATE TABLE operations
+ */
+export class TableAlreadyExistsError extends Data.TaggedError('TableAlreadyExistsError')<{
+	tableName: string;
+}> {}
+
+export class TopologyFetchError extends Data.TaggedError('TopologyFetchError')<{
+	databaseId: string;
+	cause?: unknown;
+}> {}
+
+export class TopologyUpdateError extends Data.TaggedError('TopologyUpdateError')<{
+	tableName: string;
+	cause?: unknown;
+}> {}
+
+export class StorageExecutionError extends Data.TaggedError('StorageExecutionError')<{
+	nodeId: string;
+	query: string;
+	cause?: unknown;
+}> {}
 
 /**
  * Cache statistics for a query
@@ -256,64 +280,134 @@ export class ConductorClient {
 	};
 
 	/**
-	 * Handle CREATE TABLE statement execution
+	 * Handle CREATE TABLE statement execution (Effect version)
+	 *
+	 * Uses Effect for composable error handling and async operations.
+	 * All errors are typed and can be handled explicitly.
 	 */
-	private async handleCreateTable(statement: CreateTableStatement, query: string, correlationId?: string): Promise<QueryResult> {
+	private handleCreateTableEffect(
+		statement: CreateTableStatement,
+		query: string,
+		correlationId?: string
+	): Effect.Effect<
+		QueryResult,
+		TableAlreadyExistsError | TopologyFetchError | TopologyUpdateError | StorageExecutionError
+	> {
 		const tableName = statement.table.name;
 
-		// Get topology stub
-		const topologyId = this.topology.idFromName(this.databaseId);
-		const topologyStub = this.topology.get(topologyId);
-		const topologyData = await topologyStub.getTopology();
+		return Effect.gen(this, function* () {
+			// Step 1: Get topology data
+			const topologyId = this.topology.idFromName(this.databaseId);
+			const topologyStub = this.topology.get(topologyId);
 
-		// Check if table already exists in topology
-		const existingTable = topologyData.tables.find((t) => t.table_name === tableName);
+			const topologyData = yield* Effect.tryPromise({
+				try: () => topologyStub.getTopology(),
+				catch: (error) =>
+					new TopologyFetchError({
+						databaseId: this.databaseId,
+						cause: error,
+					}),
+			});
 
-		// If IF NOT EXISTS is specified and table exists, skip
-		if (statement.ifNotExists && existingTable) {
+			// Step 2: Check if table already exists
+			const existingTable = topologyData.tables.find((t) => t.table_name === tableName);
+
+			// If IF NOT EXISTS is specified and table exists, return early
+			if (statement.ifNotExists && existingTable) {
+				return {
+					rows: [],
+					rowsAffected: 0,
+				};
+			}
+
+			// If table exists and IF NOT EXISTS was not specified, fail with typed error
+			if (existingTable) {
+				return yield* Effect.fail(new TableAlreadyExistsError({ tableName }));
+			}
+
+			// Step 3: Extract metadata from the CREATE TABLE statement
+			const metadata = extractTableMetadata(statement, query);
+
+			// Step 4: Add table to topology
+			yield* Effect.tryPromise({
+				try: () =>
+					topologyStub.updateTopology({
+						tables: {
+							add: [metadata],
+						},
+					}),
+				catch: (error) =>
+					new TopologyUpdateError({
+						tableName,
+						cause: error,
+					}),
+			});
+
+			// Step 5: Inject _virtualShard column and create composite primary key
+			const modifiedQuery = this.injectVirtualShardColumn(statement);
+
+			// Step 6: Execute CREATE TABLE on all storage nodes in parallel
+			yield* Effect.all(
+				topologyData.storage_nodes.map((node) => {
+					const storageId = this.storage.idFromName(node.node_id);
+					const storageStub = this.storage.get(storageId);
+
+					return Effect.tryPromise({
+						try: () =>
+							storageStub.executeQuery({
+								query: modifiedQuery,
+								params: [],
+								queryType: 'CREATE',
+							}),
+						catch: (error) =>
+							new StorageExecutionError({
+								nodeId: node.node_id,
+								query: modifiedQuery,
+								cause: error,
+							}),
+					});
+				}),
+				{ concurrency: 'unbounded' } // Execute in parallel
+			);
+
+			// Step 7: Return success result
 			return {
 				rows: [],
 				rowsAffected: 0,
 			};
-		}
-
-		// If table exists and IF NOT EXISTS was not specified, throw error
-		if (existingTable) {
-			throw new Error(`Table '${tableName}' already exists in topology`);
-		}
-
-		// Extract metadata from the CREATE TABLE statement
-		const metadata = extractTableMetadata(statement, query);
-
-		// Add table to topology
-		await topologyStub.updateTopology({
-			tables: {
-				add: [metadata],
-			},
 		});
+	}
 
-		// Inject _virtualShard column and create composite primary key
-		// This ensures shard isolation and allows duplicate PKs on different shards (same node)
-		const modifiedQuery = this.injectVirtualShardColumn(statement);
+	/**
+	 * Handle CREATE TABLE statement execution (Promise wrapper for backward compatibility)
+	 *
+	 * This wraps the Effect version and converts it back to a Promise.
+	 * Eventually, the entire conductor can be refactored to use Effect.
+	 */
+	private async handleCreateTable(statement: CreateTableStatement, query: string, correlationId?: string): Promise<QueryResult> {
+		const effect = this.handleCreateTableEffect(statement, query, correlationId);
 
-		// Execute CREATE TABLE on all storage nodes in parallel (use actual node IDs from topology)
-		await Promise.all(
-			topologyData.storage_nodes.map(async (node) => {
-				const storageId = this.storage.idFromName(node.node_id);
-				const storageStub = this.storage.get(storageId);
-
-				await storageStub.executeQuery({
-					query: modifiedQuery,
-					params: [],
-					queryType: 'CREATE',
-				});
-			}),
+		// Run the Effect and convert errors back to exceptions for now
+		return Effect.runPromise(
+			effect.pipe(
+				Effect.catchAll((error) => {
+					// Convert typed errors to standard errors for backward compatibility
+					if (error instanceof TableAlreadyExistsError) {
+						return Effect.fail(new Error(`Table '${error.tableName}' already exists in topology`));
+					}
+					if (error instanceof TopologyFetchError) {
+						return Effect.fail(new Error(`Failed to fetch topology for database '${error.databaseId}'`));
+					}
+					if (error instanceof TopologyUpdateError) {
+						return Effect.fail(new Error(`Failed to update topology for table '${error.tableName}'`));
+					}
+					if (error instanceof StorageExecutionError) {
+						return Effect.fail(new Error(`Failed to execute CREATE TABLE on node '${error.nodeId}'`));
+					}
+					return Effect.fail(error as Error);
+				})
+			)
 		);
-
-		return {
-			rows: [],
-			rowsAffected: 0,
-		};
 	}
 
 	/**

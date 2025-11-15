@@ -17,6 +17,7 @@
 	},
 	"dependencies": {
 		"@databases/sqlite-ast": "workspace:*",
+		"effect": "^3.19.3",
 		"hono": "^4.10.4",
 		"workers-tagged-logger": "^0.13.7"
 	},
