@@ -90,10 +90,11 @@ function processBuildIndexJobEffect(
 		const columnList = job.columns.join(', ');
 		const distinctQuery = `SELECT DISTINCT ${columnList}, _virtualShard FROM ${job.table_name}`;
 
+		type DistinctRow = Record<string, any> & { _virtualShard: number };
+
 		const queryResult = yield* Effect.tryPromise({
 			try: async () => {
-				const result = await conductor.sql([distinctQuery] as any);
-				return result as unknown;
+				return await conductor.sql<DistinctRow>([distinctQuery] as any);
 			},
 			catch: (error) =>
 				new TopologyFetchError({
@@ -102,21 +103,15 @@ function processBuildIndexJobEffect(
 				}),
 		});
 
-		// Extract rows from QueryResult
-		const resultRows = ((queryResult as any)?.results?.[0]?.rows || (queryResult as any)?.rows || []) as Record<
-			string,
-			any
-		>[];
-
 		// 2. Build index entries mapping distinct values to their shards
 		// Group by value to collect all shards that contain each distinct value
 		const valueToShards = new Map<string, Set<number>>();
 
-		for (const row of resultRows) {
+		for (const row of queryResult.rows) {
 			const keyValue = buildKeyValue(row, job.columns);
 			if (keyValue === null) continue;
 
-			const shardId = row._virtualShard as number;
+			const shardId = row._virtualShard;
 
 			if (!valueToShards.has(keyValue)) {
 				valueToShards.set(keyValue, new Set());

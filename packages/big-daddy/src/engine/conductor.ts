@@ -69,8 +69,8 @@ export interface ShardStats {
 /**
  * Result from a SQL query execution
  */
-export interface QueryResult {
-	rows: Record<string, any>[];
+export interface QueryResult<T = Record<string, any>> {
+	rows: T[];
 	rowsAffected?: number;
 	cacheStats?: QueryCacheStats; // Cache statistics (only for SELECT queries)
 	shardStats?: ShardStats[]; // Statistics for each shard queried
@@ -117,10 +117,10 @@ export class ConductorClient {
 	 * Execute a SQL query using tagged template literals
 	 *
 	 * @example
-	 * const result = await conductor.sql`SELECT * FROM users WHERE id = ${userId}`;
+	 * const result = await conductor.sql<{ id: number; name: string }>`SELECT id, name FROM users WHERE id = ${userId}`;
 	 * await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
 	 */
-	sql = async (strings: TemplateStringsArray, ...values: any[]): Promise<QueryResult> => {
+	sql = async <T = Record<string, any>>(strings: TemplateStringsArray, ...values: any[]): Promise<QueryResult<T>> => {
 		return withLogTags({ source: 'Conductor' }, async () => {
 			const startTime = Date.now();
 			const cid = this.correlationId;
@@ -1434,7 +1434,7 @@ export class ConductorClient {
  * Conductor API interface with sql execution and cache management
  */
 export interface ConductorAPI {
-	sql: (strings: TemplateStringsArray, ...values: any[]) => Promise<QueryResult>;
+	sql: <T = Record<string, any>>(strings: TemplateStringsArray, ...values: any[]) => Promise<QueryResult<T>>;
 	getCacheStats: () => CacheStats;
 	clearCache: () => void;
 }
@@ -1457,7 +1457,7 @@ export function createConductor(databaseId: string, cid: string, env: Env): Cond
 	const client = new ConductorClient(databaseId, cid, env.STORAGE, env.TOPOLOGY, env.INDEX_QUEUE, env);
 
 	return {
-		sql: (strings: TemplateStringsArray, ...values: any[]) => client.sql(strings, ...values),
+		sql: <T = Record<string, any>>(strings: TemplateStringsArray, ...values: any[]) => client.sql<T>(strings, ...values),
 		getCacheStats: () => client.getCacheStats(),
 		clearCache: () => client.clearCache(),
 	};
