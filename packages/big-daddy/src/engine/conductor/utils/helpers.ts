@@ -9,7 +9,6 @@ import type {
 	TableConstraint,
 	Statement,
 } from '@databases/sqlite-ast';
-import type { QueryType } from '../../storage';
 import type { QueryResult, ShardStats } from '../types';
 import { logger } from '../../../logger';
 

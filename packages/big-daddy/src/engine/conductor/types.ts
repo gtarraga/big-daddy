@@ -1,6 +1,6 @@
 import type { Statement, SelectStatement, InsertStatement, UpdateStatement, DeleteStatement } from '@databases/sqlite-ast';
 import type { Topology, QueryPlanData } from '../topology/index';
-import type { Storage, QueryResult as StorageQueryResult, QueryType } from '../storage';
+import type { Storage } from '../storage';
 
 /**
  * Error types for conductor operations

@@ -10,7 +10,12 @@ import type {
 	DeleteStatement,
 	DropTableStatement,
 } from '@databases/sqlite-ast';
-import type { QueryType } from '../storage';
+
+/**
+ * Query type enumeration for categorizing SQL statements
+ * (Note: Not used by Storage layer, but needed for logging and query planning)
+ */
+export type QueryType = 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'CREATE' | 'DROP' | 'ALTER' | 'PRAGMA' | 'UNKNOWN';
 
 /**
  * Extract the table name from a parsed SQL statement

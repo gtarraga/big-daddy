@@ -33,6 +33,25 @@ export interface IndexMaintenanceJob {
 }
 
 /**
+ * Job containing deduplicated index maintenance events from DELETE/UPDATE
+ * This is a more efficient alternative to IndexMaintenanceJob
+ * Pre-computes the index changes at query time instead of re-querying storage
+ */
+export interface IndexMaintenanceEventJob {
+	type: 'maintain_index_events';
+	database_id: string;
+	table_name: string;
+	events: Array<{
+		index_name: string;         // The index being updated
+		key_value: string;          // The indexed value (single or JSON-stringified composite)
+		shard_id: number;           // Which shard contains this index entry
+		operation: 'add' | 'remove'; // 'add' for INSERT, 'remove' for DELETE
+	}>;
+	created_at: string;
+	correlation_id?: string; // Optional correlation ID for tracing
+}
+
+/**
  * Job to reshard a table across multiple shards
  * This is enqueued when PRAGMA reshardTable is executed
  *
@@ -84,7 +103,7 @@ export interface ReshardingChangeLog {
 /**
  * Union type of all possible queue jobs (index + resharding)
  */
-export type IndexJob = IndexBuildJob | IndexMaintenanceJob | ReshardTableJob | ReshardingChangeLog;
+export type IndexJob = IndexBuildJob | IndexMaintenanceJob | IndexMaintenanceEventJob | ReshardTableJob | ReshardingChangeLog;
 
 /**
  * Queue message batch from Cloudflare
