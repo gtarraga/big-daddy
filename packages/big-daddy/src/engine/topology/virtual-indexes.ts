@@ -15,8 +15,9 @@
  * - maintainIndexesForInsert: Maintain indexes for INSERT operations (helper)
  */
 
+import type { Expression, BinaryExpression, Literal, Placeholder, InsertStatement } from '@databases/sqlite-ast';
 import type { Topology } from './index';
-import type { IndexStatus } from './types';
+import type { IndexStatus, SqlParam } from './types';
 
 export class VirtualIndexOperations {
 	constructor(private storage: any) {}
@@ -287,11 +288,11 @@ export class VirtualIndexOperations {
 	 * Private helper method used by query planning
 	 */
 	async getShardsFromIndexedWhere(
-		where: any,
+		where: Expression,
 		tableName: string,
 		tableShards: Array<{ table_name: string; shard_id: number; node_id: string }>,
 		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
-		params: any[]
+		params: SqlParam[]
 	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }> | null> {
 		// Try to match composite index from AND conditions
 		if (where.type === 'BinaryExpression' && where.operator === 'AND') {
@@ -445,10 +446,10 @@ export class VirtualIndexOperations {
 	 * Called from getQueryPlanData before the INSERT executes
 	 */
 	async maintainIndexesForInsert(
-		statement: any,
+		statement: InsertStatement,
 		indexes: Array<{ index_name: string; columns: string }>,
 		shard: { table_name: string; shard_id: number; node_id: string },
-		params: any[]
+		params: SqlParam[]
 	): Promise<void> {
 		// Extract values from the INSERT statement
 		if (!statement.columns || statement.values.length === 0) {
@@ -501,10 +502,10 @@ export class VirtualIndexOperations {
 	 * Extract column-value pairs from AND conditions
 	 * Private helper
 	 */
-	private extractColumnValuesFromAnd(where: any, params: any[]): Map<string, any> {
+	private extractColumnValuesFromAnd(where: Expression, params: SqlParam[]): Map<string, any> {
 		const columnValues = new Map<string, any>();
 
-		const extract = (node: any) => {
+		const extract = (node: Expression) => {
 			if (node.type === 'BinaryExpression') {
 				if (node.operator === 'AND') {
 					extract(node.left);
@@ -537,14 +538,14 @@ export class VirtualIndexOperations {
 	 * Extract value from an expression node
 	 * Private helper
 	 */
-	private extractValueFromExpression(expression: any, params: any[]): any {
+	private extractValueFromExpression(expression: Expression, params: SqlParam[]): any {
 		if (!expression) {
 			return null;
 		}
 		if (expression.type === 'Literal') {
-			return expression.value;
+			return (expression as Literal).value;
 		} else if (expression.type === 'Placeholder') {
-			return params[expression.parameterIndex];
+			return params[(expression as Placeholder).parameterIndex];
 		}
 		return null;
 	}

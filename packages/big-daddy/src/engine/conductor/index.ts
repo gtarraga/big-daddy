@@ -87,7 +87,6 @@ export class ConductorClient {
 			const statement = parse(query);
 
 			logger.info('Executing query', {
-				queryType: statement.type,
 			});
 
 			// Create handler context
@@ -126,7 +125,6 @@ export class ConductorClient {
 
 			const duration = Date.now() - startTime;
 			logger.info('Query completed', {
-				queryType: statement.type,
 				duration,
 				rowCount: result.rows.length,
 				rowsAffected: result.rowsAffected,

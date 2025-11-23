@@ -9,9 +9,9 @@
 
 import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../../logger';
-import type { Statement } from '@databases/sqlite-ast';
+import type { Statement, InsertStatement, SelectStatement, UpdateStatement, DeleteStatement } from '@databases/sqlite-ast';
 import type { Topology } from './index';
-import type { QueryPlanData, AsyncJob } from './types';
+import type { QueryPlanData, AsyncJob, SqlParam, TableMetadata, TableShard, VirtualIndex } from './types';
 
 export class AdministrationOperations {
 	constructor(private storage: any, private env: Env, private topology: Topology) {}
@@ -27,7 +27,7 @@ export class AdministrationOperations {
 	 * @param params - Query parameters
 	 * @returns Complete query plan with shard targets determined
 	 */
-	async getQueryPlanData(tableName: string, statement: Statement, params: any[], correlationId?: string): Promise<QueryPlanData> {
+	async getQueryPlanData(tableName: string, statement: Statement, params: SqlParam[], correlationId?: string): Promise<QueryPlanData> {
 		return withLogTags({ source: 'Topology' }, async () => {
 			if (correlationId) {
 				logger.setTags({
@@ -42,14 +42,13 @@ export class AdministrationOperations {
 			const startTime = Date.now();
 			logger.debug('Getting query plan data', {
 				table: tableName,
-				queryType: statement.type,
 			});
 
 			// Fetch ALL topology data for this table in a single pass
 			const tables = this.storage.sql.exec(
 				`SELECT * FROM tables WHERE table_name = ?`,
 				tableName
-			).toArray() as unknown as any[];
+			).toArray() as unknown as TableMetadata[];
 
 			const tableMetadata = tables[0];
 			if (!tableMetadata) {
@@ -60,7 +59,7 @@ export class AdministrationOperations {
 			const tableShards = this.storage.sql.exec(
 				`SELECT * FROM table_shards WHERE table_name = ? AND status = 'active' ORDER BY shard_id`,
 				tableName
-			).toArray() as unknown as any[];
+			).toArray() as unknown as TableShard[];
 
 			if (tableShards.length === 0) {
 				logger.error('No active shards found for table', { table: tableName });
@@ -79,7 +78,13 @@ export class AdministrationOperations {
 			});
 
 			// Determine which shards to query (using indexes if possible)
-			const shardsToQuery = await this.determineShardTargets(statement, tableMetadata, tableShards, virtual_indexes, params);
+		const shardsToQuery = await this.determineShardTargets(
+			statement,
+			tableMetadata,
+			tableShards,
+			virtual_indexes,
+			params
+		);
 
 			logger.info('Shard targets determined', {
 				shardsSelected: shardsToQuery.length,
@@ -94,7 +99,7 @@ export class AdministrationOperations {
 					indexCount: virtual_indexes.length,
 				});
 				await this.topology.maintainIndexesForInsert(
-					statement as any,
+					statement as InsertStatement,
 					virtual_indexes,
 					shardsToQuery[0]!, // INSERT always goes to single shard
 					params
@@ -105,9 +110,11 @@ export class AdministrationOperations {
 			logger.debug('Query plan data completed', { duration });
 
 			return {
-				tableMetadata,
 				shardsToQuery,
-				virtualIndexes: virtual_indexes,
+				virtualIndexes: virtual_indexes.map(idx => ({
+			...idx,
+			table_name: tableName,
+		})),
 			};
 		});
 	}
@@ -121,46 +128,25 @@ export class AdministrationOperations {
 		tableMetadata: any,
 		tableShards: Array<{ table_name: string; shard_id: number; node_id: string }>,
 		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
-		params: any[]
+		params: SqlParam[]
 	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }>> {
-		// For INSERT, route to specific shard based on shard key value
+		// For INSERT statements, route to all shards (distribution handled by Conductor)
 		if (statement.type === 'InsertStatement') {
-			try {
-				const shardId = this.topology.getShardIdForInsert(statement as any, tableMetadata, tableShards.length, params);
-				const shard = tableShards.find((s) => s.shard_id === shardId);
-				if (!shard) {
-					throw new Error(`Shard ${shardId} not found for table '${tableMetadata.table_name}'`);
-				}
-				return [shard];
-			} catch (error) {
-				// If we can't determine shard (e.g., bulk inserts), use first shard as fallback
-				// This matches the Conductor's behavior
-				return [tableShards[0]!];
-			}
+			return tableShards;
 		}
 
-		// For SELECT/UPDATE/DELETE, check WHERE clause
-		const where = (statement as any).where;
+		// For SELECT/UPDATE/DELETE, check WHERE clause for optimization opportunities
+		const where = (statement as SelectStatement | UpdateStatement | DeleteStatement).where;
 
 		if (where) {
-			// Check if it filters on shard key
-			const shardId = this.topology.getShardIdFromWhere(where, tableMetadata, tableShards.length, params);
-			if (shardId !== null) {
-				const shard = tableShards.find((s) => s.shard_id === shardId);
-				if (!shard) {
-					throw new Error(`Shard ${shardId} not found for table '${tableMetadata.table_name}'`);
-				}
-				return [shard];
-			}
-
-			// Shard key not used - check if we can use a virtual index
+			// Check if we can use a virtual index to narrow shards
 			const indexedShards = await this.topology.getShardsFromIndexedWhere(where, tableMetadata.table_name, tableShards, virtualIndexes, params);
 			if (indexedShards !== null) {
 				return indexedShards;
 			}
 		}
 
-		// No WHERE clause or couldn't optimize - query all shards
+		// No optimization possible - query all shards
 		return tableShards;
 	}
 

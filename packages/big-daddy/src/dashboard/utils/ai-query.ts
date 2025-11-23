@@ -13,7 +13,6 @@ export async function parseQueryWithAI(query: string, ai: Ai): Promise<string> {
 	try {
 		const statement = parse(query);
 		logger.debug('Query parsed successfully with sqlite-ast', {
-			queryType: statement.type,
 		});
 		return query; // It's already valid SQL
 	} catch (parseError) {

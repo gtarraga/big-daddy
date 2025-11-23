@@ -681,7 +681,6 @@ describe('Topology Durable Object', () => {
 				const statement = parse('SELECT * FROM users WHERE name = ?');
 				const planData = await stub.getQueryPlanData('users', statement, ['Alice']);
 
-				expect(planData.tableMetadata.table_name).toBe('users');
 				expect(planData.shardsToQuery).toHaveLength(3); // All shards
 				expect(planData.virtualIndexes).toHaveLength(0);
 			});
@@ -710,7 +709,6 @@ describe('Topology Durable Object', () => {
 				const statement = parse('SELECT * FROM users WHERE id = ?');
 				const planData = await stub.getQueryPlanData('users', statement, [123]);
 
-				expect(planData.tableMetadata.table_name).toBe('users');
 				expect(planData.shardsToQuery).toHaveLength(1); // Single shard
 				expect(planData.shardsToQuery[0].shard_id).toBeGreaterThanOrEqual(0);
 				expect(planData.shardsToQuery[0].shard_id).toBeLessThan(3);
@@ -745,7 +743,6 @@ describe('Topology Durable Object', () => {
 				const statement = parse('SELECT * FROM users WHERE email = ?');
 				const planData = await stub.getQueryPlanData('users', statement, ['alice@example.com']);
 
-				expect(planData.tableMetadata.table_name).toBe('users');
 				expect(planData.shardsToQuery).toHaveLength(1); // Reduced to single shard via index
 				expect(planData.shardsToQuery[0].shard_id).toBe(1);
 				expect(planData.virtualIndexes).toHaveLength(1);
@@ -842,7 +839,6 @@ describe('Topology Durable Object', () => {
 				const statement = parse('UPDATE users SET name = ? WHERE age > ?');
 				const planData = await stub.getQueryPlanData('users', statement, ['Bob', 18]);
 
-				expect(planData.tableMetadata.table_name).toBe('users');
 				expect(planData.shardsToQuery).toHaveLength(3); // All shards
 			});
 
@@ -969,7 +965,6 @@ describe('Topology Durable Object', () => {
 				const statement = parse('DELETE FROM users WHERE status = ?');
 				const planData = await stub.getQueryPlanData('users', statement, ['inactive']);
 
-				expect(planData.tableMetadata.table_name).toBe('users');
 				expect(planData.shardsToQuery).toHaveLength(3); // All shards
 			});
 

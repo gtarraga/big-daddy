@@ -8,7 +8,7 @@
  */
 
 import type { Topology } from './index';
-import type { TopologyData, TopologyUpdates } from './types';
+import type { TopologyData, TopologyUpdates, SqlParam, StorageNode, TableMetadata, TableShard, VirtualIndex, VirtualIndexEntry, ReshardingState, AsyncJob } from './types';
 
 export class CRUDOperations {
 	constructor(private storage: any) {}
@@ -64,19 +64,19 @@ export class CRUDOperations {
 	 * @returns Complete topology data including storage nodes, tables, and virtual indexes
 	 */
 	async getTopology(): Promise<TopologyData> {
-		const storage_nodes = this.storage.sql.exec(`SELECT * FROM storage_nodes`).toArray() as unknown as any[];
+		const storage_nodes = this.storage.sql.exec(`SELECT * FROM storage_nodes`).toArray() as unknown as StorageNode[];
 
-		const tables = this.storage.sql.exec(`SELECT * FROM tables`).toArray() as unknown as any[];
+		const tables = this.storage.sql.exec(`SELECT * FROM tables`).toArray() as unknown as TableMetadata[];
 
-		const table_shards = this.storage.sql.exec(`SELECT * FROM table_shards ORDER BY table_name, shard_id`).toArray() as unknown as any[];
+		const table_shards = this.storage.sql.exec(`SELECT * FROM table_shards ORDER BY table_name, shard_id`).toArray() as unknown as TableShard[];
 
-		const virtual_indexes = this.storage.sql.exec(`SELECT * FROM virtual_indexes`).toArray() as unknown as any[];
+		const virtual_indexes = this.storage.sql.exec(`SELECT * FROM virtual_indexes`).toArray() as unknown as VirtualIndex[];
 
-		const virtual_index_entries = this.storage.sql.exec(`SELECT * FROM virtual_index_entries`).toArray() as unknown as any[];
+		const virtual_index_entries = this.storage.sql.exec(`SELECT * FROM virtual_index_entries`).toArray() as unknown as VirtualIndexEntry[];
 
-		const resharding_states = this.storage.sql.exec(`SELECT * FROM resharding_states`).toArray() as unknown as any[];
+		const resharding_states = this.storage.sql.exec(`SELECT * FROM resharding_states`).toArray() as unknown as ReshardingState[];
 
-		const async_jobs = this.storage.sql.exec(`SELECT * FROM async_jobs ORDER BY created_at DESC`).toArray() as unknown as any[];
+		const async_jobs = this.storage.sql.exec(`SELECT * FROM async_jobs ORDER BY created_at DESC`).toArray() as unknown as AsyncJob[];
 
 		return {
 			storage_nodes,

@@ -5,6 +5,8 @@
  * including storage nodes, tables, shards, virtual indexes, and async jobs.
  */
 
+export type { SqlParam } from '../conductor/types';
+
 export interface StorageNode {
 	node_id: string;
 	created_at: number;

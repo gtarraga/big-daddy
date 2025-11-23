@@ -12,7 +12,7 @@
  */
 
 import { DurableObject } from 'cloudflare:workers';
-import type { Statement } from '@databases/sqlite-ast';
+import type { Statement, InsertStatement, Expression, BinaryExpression, Literal, Placeholder } from '@databases/sqlite-ast';
 
 import type {
 	StorageNode,
@@ -26,6 +26,7 @@ import type {
 	TopologyUpdates,
 	IndexStatus,
 	QueryPlanData,
+	SqlParam,
 } from './types';
 
 import { initializeSchemaTables } from './tables';
@@ -290,7 +291,7 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Get all topology data needed for query planning
 	 */
-	async getQueryPlanData(tableName: string, statement: Statement, params: any[], correlationId?: string): Promise<QueryPlanData> {
+	async getQueryPlanData(tableName: string, statement: Statement, params: SqlParam[], correlationId?: string): Promise<QueryPlanData> {
 		this.ensureCreated();
 		return this.administration.getQueryPlanData(tableName, statement, params, correlationId);
 	}
@@ -376,7 +377,7 @@ export class Topology extends DurableObject<Env> {
 		tableMetadata: any,
 		tableShards: Array<{ table_name: string; shard_id: number; node_id: string }>,
 		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
-		params: any[],
+		params: SqlParam[],
 	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }>> {
 		return this.administration.determineShardTargets(statement, tableMetadata, tableShards, virtualIndexes, params);
 	}
@@ -385,9 +386,9 @@ export class Topology extends DurableObject<Env> {
 	 * Calculate shard ID for INSERT based on shard key value
 	 * Used by AdministrationOperations
 	 */
-	public getShardIdForInsert(statement: any, tableMetadata: any, numShards: number, params: any[]): number {
+	public getShardIdForInsert(statement: InsertStatement, tableMetadata: TableMetadata, numShards: number, params: SqlParam[]): number {
 		// Find the shard key column in the INSERT
-		const columnIndex = statement.columns?.findIndex((col: any) => col.name === tableMetadata.shard_key);
+		const columnIndex = statement.columns?.findIndex((col) => col.name === tableMetadata.shard_key);
 
 		if (columnIndex === undefined || columnIndex === -1) {
 			throw new Error(`Shard key '${tableMetadata.shard_key}' not found in INSERT statement`);
@@ -414,7 +415,7 @@ export class Topology extends DurableObject<Env> {
 	 * Try to determine shard ID from WHERE clause
 	 * Used by AdministrationOperations
 	 */
-	public getShardIdFromWhere(where: any, tableMetadata: any, numShards: number, params: any[]): number | null {
+	public getShardIdFromWhere(where: Expression, tableMetadata: TableMetadata, numShards: number, params: SqlParam[]): number | null {
 		if (where.type === 'BinaryExpression' && where.operator === '=') {
 			let columnName: string | null = null;
 			let valueExpression: any | null = null;
@@ -441,14 +442,14 @@ export class Topology extends DurableObject<Env> {
 	/**
 	 * Extract value from an expression node
 	 */
-	private extractValueFromExpression(expression: any, params: any[]): any {
+	private extractValueFromExpression(expression: Expression, params: SqlParam[]): any {
 		if (!expression) {
 			return null;
 		}
 		if (expression.type === 'Literal') {
-			return expression.value;
+			return (expression as Literal).value;
 		} else if (expression.type === 'Placeholder') {
-			return params[expression.parameterIndex];
+			return params[(expression as Placeholder).parameterIndex];
 		}
 		return null;
 	}
@@ -472,11 +473,11 @@ export class Topology extends DurableObject<Env> {
 	 * Check if WHERE clause can use a virtual index to reduce shard fan-out
 	 */
 	async getShardsFromIndexedWhere(
-		where: any,
+		where: Expression,
 		tableName: string,
 		tableShards: Array<{ table_name: string; shard_id: number; node_id: string }>,
 		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
-		params: any[],
+		params: SqlParam[],
 	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }> | null> {
 		return this.virtualIndexes.getShardsFromIndexedWhere(where, tableName, tableShards, virtualIndexes, params);
 	}
@@ -485,10 +486,10 @@ export class Topology extends DurableObject<Env> {
 	 * Maintain indexes for INSERT operation
 	 */
 	async maintainIndexesForInsert(
-		statement: any,
+		statement: InsertStatement,
 		indexes: Array<{ index_name: string; columns: string }>,
 		shard: { table_name: string; shard_id: number; node_id: string },
-		params: any[],
+		params: SqlParam[],
 	): Promise<void> {
 		return this.virtualIndexes.maintainIndexesForInsert(statement, indexes, shard, params);
 	}

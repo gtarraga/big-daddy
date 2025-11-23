@@ -1,5 +1,6 @@
-import type { Statement, SelectStatement, InsertStatement, UpdateStatement, DeleteStatement } from '@databases/sqlite-ast';
+import type { Statement, SelectStatement, InsertStatement, UpdateStatement, DeleteStatement, Expression, Literal, Placeholder, BinaryExpression } from '@databases/sqlite-ast';
 import type { QueryPlanData } from '../topology';
+import type { SqlParam } from '../conductor/types';
 
 /**
  * Cache entry with timestamp and TTL
@@ -81,7 +82,7 @@ export class TopologyCache {
 	 *
 	 * Returns null if the query is not cacheable (e.g., full table scans)
 	 */
-	buildQueryPlanCacheKey(tableName: string, statement: Statement, params: any[]): string | null {
+	buildQueryPlanCacheKey(tableName: string, statement: Statement, params: SqlParam[]): string | null {
 		// Only cache SELECT queries with WHERE clauses
 		if (statement.type === 'SelectStatement') {
 			const selectStmt = statement as SelectStatement;
@@ -121,7 +122,7 @@ export class TopologyCache {
 	 * This creates a deterministic string representation of the WHERE clause
 	 * that can be used as a cache key.
 	 */
-	private serializeWhereClause(where: any, params: any[]): string | null {
+	private serializeWhereClause(where: Expression, params: SqlParam[]): string | null {
 		if (!where) return null;
 
 		// Handle binary expressions (=, AND, IN, etc.)
@@ -166,11 +167,12 @@ export class TopologyCache {
 	/**
 	 * Extract column name from a binary expression
 	 */
-	private extractColumnName(expr: any): string | null {
-		if (expr.left?.type === 'Identifier') {
-			return expr.left.name;
-		} else if (expr.right?.type === 'Identifier') {
-			return expr.right.name;
+	private extractColumnName(expr: Expression): string | null {
+		const binExpr = expr as BinaryExpression;
+		if (binExpr.left?.type === 'Identifier') {
+			return binExpr.left.name;
+		} else if (binExpr.right?.type === 'Identifier') {
+			return binExpr.right.name;
 		}
 		return null;
 	}
@@ -178,11 +180,12 @@ export class TopologyCache {
 	/**
 	 * Extract value from a binary expression
 	 */
-	private extractValue(expr: any, params: any[]): any {
-		if (expr.left?.type === 'Identifier') {
-			return this.extractValueFromExpression(expr.right, params);
-		} else if (expr.right?.type === 'Identifier') {
-			return this.extractValueFromExpression(expr.left, params);
+	private extractValue(expr: Expression, params: SqlParam[]): any {
+		const binExpr = expr as BinaryExpression;
+		if (binExpr.left?.type === 'Identifier') {
+			return this.extractValueFromExpression(binExpr.right, params);
+		} else if (binExpr.right?.type === 'Identifier') {
+			return this.extractValueFromExpression(binExpr.left, params);
 		}
 		return null;
 	}
@@ -190,12 +193,12 @@ export class TopologyCache {
 	/**
 	 * Extract value from an expression node
 	 */
-	private extractValueFromExpression(expression: any, params: any[]): any {
+	private extractValueFromExpression(expression: Expression, params: SqlParam[]): any {
 		if (!expression) return null;
 		if (expression.type === 'Literal') {
-			return expression.value;
+			return (expression as Literal).value;
 		} else if (expression.type === 'Placeholder') {
-			return params[expression.parameterIndex];
+			return params[(expression as Placeholder).parameterIndex];
 		}
 		return null;
 	}

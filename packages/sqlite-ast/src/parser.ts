@@ -11,6 +11,7 @@ import type {
   DropTableStatement,
   ColumnDefinition,
   ColumnConstraint,
+  TableConstraint,
   Statement,
   SelectClause,
   JoinClause,

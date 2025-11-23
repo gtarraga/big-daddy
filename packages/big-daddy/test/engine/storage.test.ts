@@ -12,7 +12,6 @@ describe('Storage Durable Object', () => {
 		const query: QueryBatch = {
 			query: 'SELECT 1 as num',
 			params: [],
-			queryType: 'SELECT',
 		};
 
 		const result = await stub.executeQuery(query);
@@ -32,7 +31,6 @@ describe('Storage Durable Object', () => {
 		const createTable: QueryBatch = {
 			query: 'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)',
 			params: [],
-			queryType: 'CREATE',
 		};
 
 		await stub.executeQuery(createTable);
@@ -41,7 +39,6 @@ describe('Storage Durable Object', () => {
 		const insert: QueryBatch = {
 			query: 'INSERT INTO users (id, name) VALUES (?, ?)',
 			params: [1, 'John Doe'],
-			queryType: 'INSERT',
 		};
 
 		const insertResult = await stub.executeQuery(insert);
@@ -51,7 +48,6 @@ describe('Storage Durable Object', () => {
 		const select: QueryBatch = {
 			query: 'SELECT * FROM users WHERE id = ?',
 			params: [1],
-			queryType: 'SELECT',
 		};
 
 		const selectResult = await stub.executeQuery(select);
@@ -69,17 +65,14 @@ describe('Storage Durable Object', () => {
 			{
 				query: 'CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)',
 				params: [],
-				queryType: 'CREATE',
 			},
 			{
 				query: 'INSERT INTO products (id, name, price) VALUES (?, ?, ?)',
 				params: [1, 'Product A', 19.99],
-				queryType: 'INSERT',
 			},
 			{
 				query: 'INSERT INTO products (id, name, price) VALUES (?, ?, ?)',
 				params: [2, 'Product B', 29.99],
-				queryType: 'INSERT',
 			},
 		];
 
@@ -115,20 +108,17 @@ describe('Storage Durable Object', () => {
 		await stub.executeQuery({
 			query: 'CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)',
 			params: [],
-			queryType: 'CREATE',
 		});
 
 		await stub.executeQuery({
 			query: 'INSERT INTO settings (key, value) VALUES (?, ?)',
 			params: ['theme', 'dark'],
-			queryType: 'INSERT',
 		});
 
 		// Update the value
 		const updateResult = await stub.executeQuery({
 			query: 'UPDATE settings SET value = ? WHERE key = ?',
 			params: ['light', 'theme'],
-			queryType: 'UPDATE',
 		});
 
 		expect((updateResult as any).rowsAffected).toBe(1);
@@ -137,7 +127,6 @@ describe('Storage Durable Object', () => {
 		const selectResult = await stub.executeQuery({
 			query: 'SELECT value FROM settings WHERE key = ?',
 			params: ['theme'],
-			queryType: 'SELECT',
 		});
 
 		expect((selectResult as any).rows[0].value).toBe('light');
@@ -152,20 +141,17 @@ describe('Storage Durable Object', () => {
 		await stub.executeQuery({
 			query: 'CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)',
 			params: [],
-			queryType: 'CREATE',
 		});
 
 		await stub.executeQuery({
 			query: 'INSERT INTO items (id, name) VALUES (?, ?), (?, ?)',
 			params: [1, 'Item 1', 2, 'Item 2'],
-			queryType: 'INSERT',
 		});
 
 		// Delete one item
 		const deleteResult = await stub.executeQuery({
 			query: 'DELETE FROM items WHERE id = ?',
 			params: [1],
-			queryType: 'DELETE',
 		});
 
 		expect((deleteResult as any).rowsAffected).toBe(1);
@@ -174,7 +160,6 @@ describe('Storage Durable Object', () => {
 		const selectResult = await stub.executeQuery({
 			query: 'SELECT * FROM items',
 			params: [],
-			queryType: 'SELECT',
 		});
 
 		expect((selectResult as any).rows).toHaveLength(1);

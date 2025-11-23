@@ -80,7 +80,6 @@ export async function handleDescribeTable(
 				const result = (await storageStub.executeQuery({
 					query: `PRAGMA table_info("${tableName}")`,
 					params: [],
-					queryType: 'SELECT',
 				})) as any;
 				schema = result.rows as any[];
 			} catch (error) {
@@ -189,7 +188,6 @@ export async function handleTableStats(
 					const result = (await storageStub.executeQuery({
 						query: `SELECT COUNT(*) as row_count FROM "${tableName}" WHERE _virtualShard = ?`,
 						params: [shard.shard_id],
-						queryType: 'SELECT',
 					})) as any;
 
 					const rowCount = (result.rows[0] as any)?.row_count || 0;

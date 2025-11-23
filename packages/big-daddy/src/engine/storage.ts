@@ -4,15 +4,21 @@ import { logger } from '../logger';
 
 // Type definitions for Storage operations
 
-export interface QueryResult {
-	rows: Record<string, any>[];
+export interface QueryResult<T = Record<string, any>> {
+	rows: T[];
 	rowsAffected?: number;
 }
 
-export interface BatchQueryResult {
-	results: QueryResult[];
+export interface BatchQueryResult<T = Record<string, any>> {
+	results: QueryResult<T>[];
 	totalRowsAffected: number;
 }
+
+/**
+ * Type helper for casting query results to a specific row type
+ * Use like: await stub.executeQuery({...}) as StorageResults<{ count: number }>
+ */
+export type StorageResults<T> = QueryResult<T>;
 
 export interface QueryBatch {
 	query: string;

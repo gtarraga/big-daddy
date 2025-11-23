@@ -41,7 +41,6 @@ describe('Conductor', () => {
 			const storageStub = env.STORAGE.get(env.STORAGE.idFromName(node.node_id));
 			const result = await storageStub.executeQuery({
 				query: 'SELECT name FROM sqlite_master WHERE type="table" AND name="products"',
-				queryType: 'SELECT',
 			});
 			if ('rows' in result) {
 				expect(result.rows).toHaveLength(1);
@@ -590,7 +589,6 @@ describe('Conductor', () => {
 				const storageStub = env.STORAGE.get(env.STORAGE.idFromName(node.node_id));
 				const schemaResult = await storageStub.executeQuery({
 					query: 'SELECT sql FROM sqlite_master WHERE type="table" AND name="users"',
-					queryType: 'SELECT',
 				});
 
 				if ('rows' in schemaResult && schemaResult.rows.length > 0) {
@@ -625,9 +623,8 @@ describe('Conductor', () => {
 			// Verify actual table schema has (_virtualShard, user_id, tenant_id) as PRIMARY KEY
 			for (const node of topology.storage_nodes) {
 				const storageStub = env.STORAGE.get(env.STORAGE.idFromName(node.node_id));
-				const schemaResult = await storageStub.executeQuery({
+				const schemaResult = await storageStub.executeQuery<{ sql: string }>({
 					query: 'SELECT sql FROM sqlite_master WHERE type="table" AND name="events"',
-					queryType: 'SELECT',
 				});
 
 				if ('rows' in schemaResult && schemaResult.rows.length > 0) {
@@ -661,14 +658,12 @@ describe('Conductor', () => {
 			await storageStub.executeQuery({
 				query: 'INSERT INTO users (_virtualShard, id, name) VALUES (?, ?, ?)',
 				params: [1, 100, 'Bob'],
-				queryType: 'INSERT',
 			});
 
 			// Both rows should exist (no primary key conflict)
 			const allRows = await storageStub.executeQuery({
 				query: 'SELECT * FROM users WHERE id = ?',
 				params: [100],
-				queryType: 'SELECT',
 			});
 
 			expect((allRows as any).rows).toHaveLength(2);

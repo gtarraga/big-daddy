@@ -61,7 +61,6 @@ export async function handleDropIndex(
 					await storageStub.executeQuery({
 						query: `DROP INDEX IF EXISTS "${indexName}"`,
 						params: [],
-						queryType: 'DROP',
 					});
 				} catch (error) {
 					// Log but don't fail - SQLite might not have the index on this shard

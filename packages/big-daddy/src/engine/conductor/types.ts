@@ -3,6 +3,11 @@ import type { Topology, QueryPlanData } from '../topology/index';
 import type { Storage } from '../storage';
 
 /**
+ * SQL parameter type - only scalar values are supported by SQLite
+ */
+export type SqlParam = string | number | boolean | null;
+
+/**
  * Error types for conductor operations
  */
 export class TableAlreadyExistsError extends Error {

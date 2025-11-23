@@ -15,7 +15,7 @@
 import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../../logger';
 import type { ReshardTableJob, ReshardingChangeLog } from '../queue/types';
-import type { Storage } from '../storage';
+import type { Storage, StorageResults } from '../storage';
 import type { Topology } from '../topology/index';
 import { hashToShard } from '../utils/sharding';
 
@@ -56,9 +56,8 @@ export async function processReshardTableJob(job: ReshardTableJob, env: Env, cor
 			const countResult = await sourceStorageStub.executeQuery({
 				query: `SELECT COUNT(*) as count FROM ${tableName} WHERE _virtualShard = ?`,
 				params: [sourceShardId],
-				queryType: 'SELECT',
-			});
-			initialSourceCount = (countResult as any).rows[0]?.count || 0;
+			}) as StorageResults<any>;
+			initialSourceCount = countResult.rows[0]?.count || 0;
 		}
 
 		logger.info('Resharding initial state', { table: tableName, initialSourceCount, sourceShardId });
@@ -95,18 +94,16 @@ export async function processReshardTableJob(job: ReshardTableJob, env: Env, cor
 				const countResult = await targetStorageStub.executeQuery({
 					query: `SELECT COUNT(*) as count FROM ${tableName} WHERE _virtualShard = ?`,
 					params: [targetShardId],
-					queryType: 'SELECT',
-				});
-				preCopyTargetCounts[targetShardId] = (countResult as any).rows[0]?.count || 0;
+				}) as StorageResults<any>;
+				preCopyTargetCounts[targetShardId] = countResult.rows[0]?.count || 0;
 
 				// Get breakdown by virtualShard value to detect unexpected data
 				const breakdown = await targetStorageStub.executeQuery({
 					query: `SELECT _virtualShard, COUNT(*) as count FROM ${tableName} GROUP BY _virtualShard`,
 					params: [],
-					queryType: 'SELECT',
-				});
+				}) as StorageResults<any>;
 				const breakdownMap: { [key: number]: number } = {};
-				for (const row of (breakdown as any).rows) {
+				for (const row of breakdown.rows) {
 					breakdownMap[row._virtualShard] = row.count;
 				}
 				preCopyVirtualShardBreakdown[targetShardId] = breakdownMap;
@@ -142,10 +139,9 @@ export async function processReshardTableJob(job: ReshardTableJob, env: Env, cor
 				const breakdown = await targetStorageStub.executeQuery({
 					query: `SELECT _virtualShard, COUNT(*) as count FROM ${tableName} GROUP BY _virtualShard`,
 					params: [],
-					queryType: 'SELECT',
-				});
+				}) as StorageResults<any>;
 				const breakdownMap: { [key: number]: number } = {};
-				for (const row of (breakdown as any).rows) {
+				for (const row of breakdown.rows) {
 					breakdownMap[row._virtualShard] = row.count;
 				}
 				postCopyVirtualShardBreakdown[targetShardId] = breakdownMap;
@@ -329,22 +325,20 @@ async function copyShardData(
 		const result = await storageStub.executeQuery({
 			query: `SELECT * FROM ${tableName} WHERE _virtualShard = ?`,
 			params: [sourceShardId],
-			queryType: 'SELECT',
-		});
+		}) as StorageResults<any>;
 
 		if (!('rows' in result)) {
 			throw new Error('Expected QueryResult but got BatchQueryResult');
 		}
 
-		const rows = (result as any).rows as Record<string, any>[];
+		const rows = result.rows as Record<string, any>[];
 
 		// Also get count from source to verify (filtered by _virtualShard)
 		const sourceCountResult = await storageStub.executeQuery({
 			query: `SELECT COUNT(*) as count FROM ${tableName} WHERE _virtualShard = ?`,
 			params: [sourceShardId],
-			queryType: 'SELECT',
-		});
-		const sourceCount = (sourceCountResult as any).rows[0]?.count || 0;
+		}) as StorageResults<any>;
+		const sourceCount = sourceCountResult.rows[0]?.count || 0;
 
 		logger.info('Fetched rows from source shard', {
 			rowCount: rows.length,
@@ -429,8 +423,7 @@ async function copyShardData(
 				await targetStorageStub.executeQuery({
 					query,
 					params,
-					queryType: 'INSERT',
-				});
+				}) as StorageResults<any>;
 
 				rowsCopied++;
 				const currentCount = shardDistribution.get(targetShardId) || 0;
@@ -545,10 +538,9 @@ async function verifyIntegrity(
 		const sourceCountResult = await sourceStorageStub.executeQuery({
 			query: `SELECT COUNT(*) as count FROM ${tableName} WHERE _virtualShard = ?`,
 			params: [sourceShardId],
-			queryType: 'SELECT',
-		});
+		}) as StorageResults<any>;
 
-		const sourceCount = (sourceCountResult as any).rows[0]?.count || 0;
+		const sourceCount = sourceCountResult.rows[0]?.count || 0;
 		logger.info('Source shard row count', { sourceShardId, count: sourceCount, nodeId: sourceShard.node_id });
 
 		// Get target shards total row count with detailed breakdown
@@ -570,10 +562,9 @@ async function verifyIntegrity(
 			const targetCountResult = await targetStorageStub.executeQuery({
 				query: `SELECT COUNT(*) as count FROM ${tableName} WHERE _virtualShard = ?`,
 				params: [targetShardId],
-				queryType: 'SELECT',
-			});
+			}) as StorageResults<any>;
 
-			const targetCount = (targetCountResult as any).rows[0]?.count || 0;
+			const targetCount = targetCountResult.rows[0]?.count || 0;
 			targetTotalCount += targetCount;
 			targetBreakdown[targetShardId] = targetCount;
 
@@ -664,8 +655,7 @@ async function deleteOldShardData(
 		await storageStub.executeQuery({
 			query: `DELETE FROM ${tableName}`,
 			params: [],
-			queryType: 'DELETE',
-		});
+		}) as StorageResults<any>;
 
 		logger.info('Phase 5: Old shard data deleted', { sourceShardId });
 	} catch (error) {

@@ -37,14 +37,14 @@
 
 		/* Enable all strict type-checking options. */
 		"strict": true,
+
 		/* Enable experimental support for decorators. */
 		"experimentalDecorators": true,
 
 		/* Skip type checking all .d.ts files. */
 		"skipLibCheck": true,
-		"types": [
-			"./worker-configuration.d.ts",
-			"@cloudflare/vitest-pool-workers"
-		]
-	}
+		"types": ["@cloudflare/vitest-pool-workers"]
+	},
+	"include": ["src/**/*", "worker-configuration.d.ts"],
+	"exclude": ["node_modules", "dist"]
 }

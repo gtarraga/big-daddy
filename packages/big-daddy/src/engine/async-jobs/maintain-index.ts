@@ -12,6 +12,8 @@
 
 import { logger } from '../../logger';
 import type { IndexMaintenanceJob } from '../queue/types';
+import type { QueryResult, Storage, StorageResults } from '../storage';
+import type { Topology } from '../topology/index';
 
 /**
  * Compute the index key value for a row
@@ -45,9 +47,7 @@ export async function processIndexMaintenanceJob(job: IndexMaintenanceJob, env: 
 	const topology = await topologyStub.getTopology();
 
 	// Get index definitions
-	const indexes = topology.virtual_indexes.filter(
-		(idx) => job.affected_indexes.includes(idx.index_name) && idx.status === 'ready'
-	);
+	const indexes = topology.virtual_indexes.filter((idx) => job.affected_indexes.includes(idx.index_name) && idx.status === 'ready');
 
 	if (indexes.length === 0) {
 		console.log('No ready indexes to maintain');
@@ -81,11 +81,10 @@ export async function processIndexMaintenanceJob(job: IndexMaintenanceJob, env: 
 			const query = `SELECT ${columnList} FROM ${job.table_name}`;
 
 			try {
-				const result = await storageStub.executeQuery({
+				const result = (await storageStub.executeQuery({
 					query,
 					params: [],
-					queryType: 'SELECT',
-				});
+				})) as StorageResults<any>;
 
 				// Type guard: single query always returns QueryResult
 				if (!('rows' in result)) {
@@ -93,7 +92,7 @@ export async function processIndexMaintenanceJob(job: IndexMaintenanceJob, env: 
 				}
 
 				// Extract rows with proper typing to avoid deep instantiation with Disposable types
-				const resultRows = (result as any).rows as Record<string, any>[];
+				const resultRows = result.rows;
 
 				// Build set of values that SHOULD include this shard
 				const shouldExist = new Set<string>();

@@ -14,12 +14,12 @@ import type {
 	Literal,
 	Placeholder,
 } from '@databases/sqlite-ast';
-import type { QueryResult, ShardStats } from '../types';
+import type { QueryResult, ShardStats, SqlParam } from '../types';
 import { logger } from '../../../logger';
 
 export function injectVirtualShard(
 	statement: UpdateStatement | InsertStatement | DeleteStatement | SelectStatement,
-	params: any[],
+	params: SqlParam[],
 	shardId: number,
 ): { modifiedStatement: Statement; modifiedParams: any[] } {
 	try {
@@ -43,7 +43,7 @@ export function injectVirtualShard(
  *
  * Inject virtual shard column on insert
  */
-function insertColumn(stmt: InsertStatement, params: any[]): InsertStatement {
+function insertColumn(stmt: InsertStatement, params: SqlParam[]): InsertStatement {
 	const virtualShardIdentifier: Identifier = {
 		type: 'Identifier',
 		name: '_virtualShard',
@@ -62,7 +62,7 @@ function insertColumn(stmt: InsertStatement, params: any[]): InsertStatement {
  */
 function injectWhereFilter<TStatement extends DeleteStatement | SelectStatement | UpdateStatement>(
 	stmt: TStatement,
-	params: any[],
+	params: SqlParam[],
 ): TStatement {
 	const virtualShardFilter: BinaryExpression = {
 		type: 'BinaryExpression',
@@ -172,12 +172,12 @@ export function injectVirtualShardColumn(statement: CreateTableStatement): strin
 	// Insert _virtualShard as the last column
 	modifiedStatement.columns.push(virtualShardColumn);
 
-	// Create composite PRIMARY KEY constraint with _virtualShard appended
+	// Create composite PRIMARY KEY constraint with _virtualShard prepended
 	if (primaryKeyColumns.length > 0) {
 		const compositePKConstraint: TableConstraint = {
 			type: 'TableConstraint',
 			constraint: 'PRIMARY KEY',
-			columns: [...primaryKeyColumns.map((name) => ({ type: 'Identifier' as const, name })), { type: 'Identifier', name: '_virtualShard' }],
+			columns: [{ type: 'Identifier', name: '_virtualShard' }, ...primaryKeyColumns.map((name) => ({ type: 'Identifier' as const, name }))],
 		};
 
 		// Add or initialize constraints array
@@ -223,7 +223,7 @@ export function mergeResultsSimple(results: QueryResult[], isSelect: boolean): Q
 /**
  * Extract key value from a row for index invalidation
  */
-export function extractKeyValueFromRow(columns: Array<{ name: string }>, row: any[], indexColumns: string[], params: any[]): string | null {
+export function extractKeyValueFromRow(columns: Array<{ name: string }>, row: any[], indexColumns: string[], params: SqlParam[]): string | null {
 	const values: any[] = [];
 
 	for (const colName of indexColumns) {
@@ -253,14 +253,14 @@ export function extractKeyValueFromRow(columns: Array<{ name: string }>, row: an
 /**
  * Extract value from an expression node (for cache invalidation)
  */
-function extractValueFromExpression(expression: any, params: any[]): any {
+function extractValueFromExpression(expression: Expression, params: SqlParam[]): any {
 	if (!expression) {
 		return null;
 	}
 	if (expression.type === 'Literal') {
-		return expression.value;
+		return (expression as Literal).value;
 	} else if (expression.type === 'Placeholder') {
-		return params[expression.parameterIndex];
+		return params[(expression as Placeholder).parameterIndex];
 	}
 	return null;
 }

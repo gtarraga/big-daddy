@@ -13,7 +13,7 @@
 
 import { logger } from '../../logger';
 import type { Topology } from './index';
-import type { TableShard, ReshardingState } from './types';
+import type { TableShard, ReshardingState, TableMetadata, StorageNode } from './types';
 
 export class ReshardingOperations {
 	constructor(private storage: any, private env?: Env) {}
@@ -46,9 +46,7 @@ export class ReshardingOperations {
 		}
 
 		// Get all active nodes for distribution
-		const nodes = this.storage.sql.exec(`SELECT node_id FROM storage_nodes WHERE status = 'active'`).toArray() as unknown as {
-			node_id: string;
-		}[];
+		const nodes = this.storage.sql.exec(`SELECT node_id FROM storage_nodes WHERE status = 'active'`).toArray() as unknown as Array<{ node_id: string }>;
 
 		if (!nodes.length) {
 			throw new Error('No active storage nodes available');
@@ -261,7 +259,6 @@ export class ReshardingOperations {
 				await storageStub.executeQuery({
 					query: `DELETE FROM ${tableName} WHERE _virtualShard = ?`,
 					params: [shardId],
-					queryType: 'DELETE',
 				});
 
 				logger.info('Virtual shard data deleted from storage', { tableName, shardId, nodeId: shard.node_id });

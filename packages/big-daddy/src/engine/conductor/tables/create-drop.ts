@@ -80,7 +80,6 @@ export async function handleCreateTable(
 						(await storageStub.executeQuery({
 							query: modifiedQuery,
 							params: [],
-							queryType: 'CREATE',
 						})) as any,
 					catch: (error) =>
 						new StorageExecutionError(node.node_id, modifiedQuery, error),
@@ -200,7 +199,6 @@ export async function handleDropTable(
 						(await storageStub.executeQuery({
 							query: `DROP TABLE IF EXISTS "${tableName}"`,
 							params: [],
-							queryType: 'DROP',
 						})) as any,
 					catch: (error) =>
 						new StorageExecutionError(nodeId, `DROP TABLE "${tableName}"`, error),

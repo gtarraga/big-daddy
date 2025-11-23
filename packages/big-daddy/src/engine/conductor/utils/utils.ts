@@ -2,6 +2,8 @@
  * Utility functions for cache invalidation and query processing
  */
 
+import type { SqlParam } from '../types';
+
 /**
  * Extract a key value for an indexed column(s) from row data in INSERT statement
  * Handles both Literal and Placeholder values from the AST
@@ -11,7 +13,7 @@ export function extractKeyValueFromRow(
 	columns: any[],
 	row: any[],
 	indexColumns: string[],
-	params: any[],
+	params: SqlParam[],
 ): string | null {
 	// Build a map of column names to values
 	const rowData: Record<string, any> = {};
