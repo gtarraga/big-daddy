@@ -651,10 +651,10 @@ async function deleteOldShardData(
 		const storageId = env.STORAGE.idFromName(sourceShard.node_id);
 		const storageStub = env.STORAGE.get(storageId);
 
-		// Delete all data from source shard
+		// Delete all data from source shard (only rows with this virtual shard ID)
 		await storageStub.executeQuery({
-			query: `DELETE FROM ${tableName}`,
-			params: [],
+			query: `DELETE FROM ${tableName} WHERE _virtualShard = ?`,
+			params: [sourceShardId],
 		}) as StorageResults<any>;
 
 		logger.info('Phase 5: Old shard data deleted', { sourceShardId });

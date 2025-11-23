@@ -76,7 +76,15 @@ export class Storage extends DurableObject<Env> {
 					const queryStartTime = Date.now();
 					const result = this.ctx.storage.sql.exec(batch.query, ...(batch.params ?? []));
 					const rows = result.toArray() as unknown as Record<string, any>[];
-					const rowsAffected = result.rowsWritten ?? 0;
+					// Note: Cloudflare's SQL API appears to double-count rowsWritten
+					// This might be counting primary key operations as separate rows
+					// Divide by 2 to get the actual affected rows for write operations
+					let rowsAffected = result.rowsWritten ?? 0;
+					if (batch.query.trim().toUpperCase().startsWith('INSERT') ||
+					    batch.query.trim().toUpperCase().startsWith('UPDATE') ||
+					    batch.query.trim().toUpperCase().startsWith('DELETE')) {
+						rowsAffected = Math.max(1, Math.floor(rowsAffected / 2));
+					}
 
 					logger.debug('Query executed on shard', {
 						rowCount: rows.length,

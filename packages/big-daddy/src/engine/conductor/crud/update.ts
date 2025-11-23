@@ -156,7 +156,7 @@ export async function handleUpdate(
 		results = execResult.results as QueryResult[];
 	}
 
-	const result = mergeResultsSimple(results, false);
+	const result = mergeResultsSimple(results, statement);
 
 	// Add shard statistics
 	result.shardStats = shardsToQuery.map((s: ShardInfo, i: number) => ({

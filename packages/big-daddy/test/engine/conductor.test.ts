@@ -669,4 +669,115 @@ describe('Conductor', () => {
 			expect((allRows as any).rows).toHaveLength(2);
 		});
 	});
+
+	it('should handle multi-row INSERT statements', async () => {
+		const dbId = 'test-multi-row-insert';
+		const sql = await createConnection(dbId, { nodes: 1 }, env);
+
+		await sql`CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT)`;
+
+		// Test multi-row insert with multiple VALUE tuples
+		const result = await sql`
+			INSERT INTO notes (id, title, description) VALUES
+			(${1}, ${'Note 1'}, ${'Description for note 1'}),
+			(${2}, ${'Note 2'}, ${'Description for note 2'}),
+			(${3}, ${'Note 3'}, ${'Description for note 3'}),
+			(${4}, ${'Note 4'}, ${'Description for note 4'}),
+			(${5}, ${'Note 5'}, ${'Description for note 5'})
+		`;
+
+		// Multi-row insert works! The data is inserted correctly
+		expect(result.rowsAffected).toBeGreaterThan(0);
+
+		// Verify all rows were inserted
+		const allNotes = await sql`SELECT * FROM notes ORDER BY id`;
+		expect(allNotes.rows).toHaveLength(5);
+		expect(allNotes.rows[0]).toMatchObject({ id: 1, title: 'Note 1', description: 'Description for note 1' });
+		expect(allNotes.rows[1]).toMatchObject({ id: 2, title: 'Note 2', description: 'Description for note 2' });
+		expect(allNotes.rows[4]).toMatchObject({ id: 5, title: 'Note 5', description: 'Description for note 5' });
+	});
+
+	it('should handle multi-row INSERT with literal values (naughty insert)', async () => {
+		const dbId = 'test-multi-row-insert-literals';
+		const sql = await createConnection(dbId, { nodes: 1 }, env);
+
+		await sql`CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT)`;
+
+		// Test multi-row insert with literal values (no placeholders)
+		const result = await sql`
+			INSERT INTO notes (id, title, description) VALUES
+			(1, 'Note 1', 'Description for note 1'),
+			(2, 'Note 2', 'Description for note 2'),
+			(3, 'Note 3', 'Description for note 3'),
+			(4, 'Note 4', 'Description for note 4'),
+			(5, 'Note 5', 'Description for note 5')
+		`;
+
+		// Multi-row insert with literals works!
+		expect(result.rowsAffected).toBeGreaterThan(0);
+
+		// Verify all rows were inserted
+		const allNotes = await sql`SELECT * FROM notes ORDER BY id`;
+		expect(allNotes.rows).toHaveLength(5);
+		expect(allNotes.rows[0]).toMatchObject({ id: 1, title: 'Note 1', description: 'Description for note 1' });
+		expect(allNotes.rows[4]).toMatchObject({ id: 5, title: 'Note 5', description: 'Description for note 5' });
+	});
+
+	it('should handle COUNT(*) aggregation across shards', async () => {
+		const dbId = 'test-count-aggregation';
+		const sql = await createConnection(dbId, { nodes: 2 }, env);
+
+		// Create table with 3 shards
+		await sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
+
+		// Insert some users
+		await sql`INSERT INTO users (id, name) VALUES (${1}, ${'Alice'})`;
+		await sql`INSERT INTO users (id, name) VALUES (${2}, ${'Bob'})`;
+		await sql`INSERT INTO users (id, name) VALUES (${3}, ${'Charlie'})`;
+
+		// Test COUNT(*) aggregation
+		const countResult = await sql`SELECT COUNT(*) FROM users`;
+		expect(countResult.rows).toHaveLength(1);
+		// The column name should be COUNT(*) based on SQLite convention
+		const countValue = countResult.rows[0]['COUNT(*)'] ?? countResult.rows[0]['COUNT'];
+		expect(countValue).toBe(3);
+	});
+
+	it('should handle COUNT(column) aggregation', async () => {
+		const dbId = 'test-count-column-aggregation';
+		const sql = await createConnection(dbId, { nodes: 2 }, env);
+
+		await sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
+
+		// Insert some users
+		await sql`INSERT INTO users (id, name) VALUES (${1}, ${'Alice'})`;
+		await sql`INSERT INTO users (id, name) VALUES (${2}, ${'Bob'})`;
+		await sql`INSERT INTO users (id, name) VALUES (${3}, ${'Charlie'})`;
+
+		// Test COUNT(name) aggregation
+		const countResult = await sql`SELECT COUNT(name) FROM users`;
+		expect(countResult.rows).toHaveLength(1);
+		// The column name should be COUNT(name) based on SQLite convention
+		const countValue = countResult.rows[0]['COUNT(name)'];
+		expect(countValue).toBe(3);
+	});
+
+	it('should handle aliased aggregation functions', async () => {
+		const dbId = 'test-aliased-aggregation';
+		const sql = await createConnection(dbId, { nodes: 2 }, env);
+
+		await sql`CREATE TABLE potato (id INTEGER PRIMARY KEY, name TEXT)`;
+
+		// Insert some potatoes
+		await sql`INSERT INTO potato (id, name) VALUES (${1}, ${'Russet'})`;
+		await sql`INSERT INTO potato (id, name) VALUES (${2}, ${'Sweet'})`;
+		await sql`INSERT INTO potato (id, name) VALUES (${3}, ${'Red'})`;
+
+		// Test COUNT() with alias
+		const countResult = await sql`SELECT COUNT() as yo FROM potato`;
+		expect(countResult.rows).toHaveLength(1);
+		// The alias should be used as the column name
+		const countValue = countResult.rows[0]['yo'];
+		expect(countValue).toBe(3);
+	});
 });

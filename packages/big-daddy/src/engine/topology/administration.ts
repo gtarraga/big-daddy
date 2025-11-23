@@ -115,6 +115,7 @@ export class AdministrationOperations {
 			...idx,
 			table_name: tableName,
 		})),
+			shardKey: tableMetadata.shard_key,
 			};
 		});
 	}
@@ -130,7 +131,8 @@ export class AdministrationOperations {
 		virtualIndexes: Array<{ index_name: string; columns: string; index_type: 'hash' | 'unique' }>,
 		params: SqlParam[]
 	): Promise<Array<{ table_name: string; shard_id: number; node_id: string }>> {
-		// For INSERT statements, route to all shards (distribution handled by Conductor)
+		// For INSERT statements, return all shards
+		// The INSERT handler will distribute rows to appropriate shards based on shard key hashing
 		if (statement.type === 'InsertStatement') {
 			return tableShards;
 		}
@@ -139,7 +141,18 @@ export class AdministrationOperations {
 		const where = (statement as SelectStatement | UpdateStatement | DeleteStatement).where;
 
 		if (where) {
-			// Check if we can use a virtual index to narrow shards
+			// First, check if WHERE clause filters on the shard key
+			// This is the most efficient optimization
+			const shardId = this.topology.getShardIdFromWhere(where, tableMetadata, tableShards.length, params);
+			if (shardId !== null) {
+				// Found a matching shard by shard key
+				const targetShard = tableShards.find(s => s.shard_id === shardId);
+				if (targetShard) {
+					return [targetShard];
+				}
+			}
+
+			// If shard key optimization didn't work, check if we can use a virtual index to narrow shards
 			const indexedShards = await this.topology.getShardsFromIndexedWhere(where, tableMetadata.table_name, tableShards, virtualIndexes, params);
 			if (indexedShards !== null) {
 				return indexedShards;

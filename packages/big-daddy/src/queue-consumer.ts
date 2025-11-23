@@ -3,7 +3,6 @@
  *
  * This worker processes jobs from the vitess-index-jobs queue:
  * - IndexBuildJob: Build a new virtual index from existing data
- * - IndexMaintenanceJob: Maintain indexes after UPDATE/DELETE operations
  * - ReshardTableJob: Reshard a table from source to target shards
  * - ReshardingChangeLog: Change log entries (batched and processed during resharding replay)
  */
@@ -11,7 +10,7 @@
 import { withLogTags } from 'workers-tagged-logger';
 import { logger } from './logger';
 import type { IndexJob, ReshardingChangeLog, MessageBatch } from './engine/queue/types';
-import { processBuildIndexJob, processIndexMaintenanceJob, processReshardTableJob } from './engine/async-jobs';
+import { processBuildIndexJob, processReshardTableJob } from './engine/async-jobs';
 
 /**
  * Queue message handler
@@ -90,9 +89,6 @@ async function processIndexJob(job: IndexJob, env: Env, correlationId?: string):
 	switch (job.type) {
 		case 'build_index':
 			await processBuildIndexJob(job, env, correlationId);
-			break;
-		case 'maintain_index':
-			await processIndexMaintenanceJob(job, env, correlationId);
 			break;
 		case 'reshard_table':
 			await processReshardTableJob(job, env, correlationId);

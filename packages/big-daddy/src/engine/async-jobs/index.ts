@@ -5,5 +5,4 @@
  */
 
 export { processBuildIndexJob } from './build-index';
-export { processIndexMaintenanceJob } from './maintain-index';
 export { processReshardTableJob } from './reshard-table';

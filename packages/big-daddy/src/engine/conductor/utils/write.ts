@@ -57,10 +57,11 @@ function prepareShardQueries(
 	shard: ShardInfo,
 	statementsWithParams: StatementWithParams[],
 ): ShardQueries {
-	const queries = statementsWithParams.map(({ statement, params }) => {
+	const queries = statementsWithParams.map(({ statement, params }, idx) => {
 		const { modifiedStatement, modifiedParams } = injectVirtualShard(statement, params, shard.shard_id);
+		const sql = generate(modifiedStatement);
 		return {
-			query: generate(modifiedStatement),
+			query: sql,
 			params: modifiedParams,
 		};
 	});

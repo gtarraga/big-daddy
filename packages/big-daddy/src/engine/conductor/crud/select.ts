@@ -50,7 +50,7 @@ export async function handleSelect(
 	const { results, shardStats } = await executeOnShards(context, shardsToQuery, statement, params);
 
 	// STEP 3: Merge results from all shards
-	const result = mergeResultsSimple(results, true);
+	const result = mergeResultsSimple(results, statement);
 
 	// STEP 4: Add cache statistics
 	const stats = cache.getStats();

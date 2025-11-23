@@ -413,25 +413,64 @@ export class Topology extends DurableObject<Env> {
 
 	/**
 	 * Try to determine shard ID from WHERE clause
+	 * Handles simple equality conditions, AND expressions, and IN expressions on shard key
+	 * For IN expressions, returns null since they can span multiple shards
 	 * Used by AdministrationOperations
 	 */
 	public getShardIdFromWhere(where: Expression, tableMetadata: TableMetadata, numShards: number, params: SqlParam[]): number | null {
-		if (where.type === 'BinaryExpression' && where.operator === '=') {
-			let columnName: string | null = null;
-			let valueExpression: any | null = null;
+		if (!where) {
+			return null;
+		}
 
-			if (where.left.type === 'Identifier') {
-				columnName = where.left.name;
-				valueExpression = where.right;
-			} else if (where.right.type === 'Identifier') {
-				columnName = where.right.name;
-				valueExpression = where.left;
+		if (where.type === 'BinaryExpression') {
+			const binExpr = where as BinaryExpression;
+
+			// Handle simple equality on the shard key
+			if (binExpr.operator === '=') {
+				let columnName: string | null = null;
+				let valueExpression: any | null = null;
+
+				if (binExpr.left.type === 'Identifier') {
+					columnName = (binExpr.left as any).name;
+					valueExpression = binExpr.right;
+				} else if (binExpr.right.type === 'Identifier') {
+					columnName = (binExpr.right as any).name;
+					valueExpression = binExpr.left;
+				}
+
+				if (columnName === tableMetadata.shard_key && valueExpression) {
+					const value = this.extractValueFromExpression(valueExpression, params);
+					if (value !== null && value !== undefined) {
+						return this.hashToShardId(String(value), numShards);
+					}
+				}
 			}
 
-			if (columnName === tableMetadata.shard_key && valueExpression) {
-				const value = this.extractValueFromExpression(valueExpression, params);
-				if (value !== null && value !== undefined) {
-					return this.hashToShardId(String(value), numShards);
+			// Handle IN expressions on shard key - return null to indicate multiple potential shards
+			// These should be handled by virtual index lookup or full shard scan
+			if (binExpr.operator === 'IN') {
+				let columnName: string | null = null;
+				if (binExpr.left.type === 'Identifier') {
+					columnName = (binExpr.left as any).name;
+				}
+				if (columnName === tableMetadata.shard_key) {
+					// IN expressions can map to multiple shards, return null to let virtual index handle it
+					return null;
+				}
+			}
+
+			// Handle AND expressions - recursively check both sides
+			if (binExpr.operator === 'AND') {
+				// Try to find shard key condition on left side
+				const leftShardId = this.getShardIdFromWhere(binExpr.left, tableMetadata, numShards, params);
+				if (leftShardId !== null) {
+					return leftShardId;
+				}
+
+				// Try to find shard key condition on right side
+				const rightShardId = this.getShardIdFromWhere(binExpr.right, tableMetadata, numShards, params);
+				if (rightShardId !== null) {
+					return rightShardId;
 				}
 			}
 		}
