@@ -416,8 +416,13 @@ export class Topology extends DurableObject<Env> {
 	 * Handles simple equality conditions, AND expressions, and IN expressions on shard key
 	 * For IN expressions, returns null since they can span multiple shards
 	 * Used by AdministrationOperations
+	 *
+	 * @param where - WHERE clause expression
+	 * @param tableMetadata - Table metadata
+	 * @param shardIds - Array of actual shard IDs (may not be 0-indexed after resharding)
+	 * @param params - Query parameters
 	 */
-	public getShardIdFromWhere(where: Expression, tableMetadata: TableMetadata, numShards: number, params: SqlParam[]): number | null {
+	public getShardIdFromWhere(where: Expression, tableMetadata: TableMetadata, shardIds: number[], params: SqlParam[]): number | null {
 		if (!where) {
 			return null;
 		}
@@ -441,7 +446,9 @@ export class Topology extends DurableObject<Env> {
 				if (columnName === tableMetadata.shard_key && valueExpression) {
 					const value = this.extractValueFromExpression(valueExpression, params);
 					if (value !== null && value !== undefined) {
-						return this.hashToShardId(String(value), numShards);
+						// Hash to index, then map to actual shard ID (handles non-0-indexed shards after resharding)
+						const hashIndex = this.hashToShardId(String(value), shardIds.length);
+						return shardIds[hashIndex]!;
 					}
 				}
 			}
@@ -462,13 +469,13 @@ export class Topology extends DurableObject<Env> {
 			// Handle AND expressions - recursively check both sides
 			if (binExpr.operator === 'AND') {
 				// Try to find shard key condition on left side
-				const leftShardId = this.getShardIdFromWhere(binExpr.left, tableMetadata, numShards, params);
+				const leftShardId = this.getShardIdFromWhere(binExpr.left, tableMetadata, shardIds, params);
 				if (leftShardId !== null) {
 					return leftShardId;
 				}
 
 				// Try to find shard key condition on right side
-				const rightShardId = this.getShardIdFromWhere(binExpr.right, tableMetadata, numShards, params);
+				const rightShardId = this.getShardIdFromWhere(binExpr.right, tableMetadata, shardIds, params);
 				if (rightShardId !== null) {
 					return rightShardId;
 				}

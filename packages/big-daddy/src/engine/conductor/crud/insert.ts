@@ -24,14 +24,14 @@ import { prepareIndexMaintenanceQueries, dispatchIndexSyncingFromQueryResults } 
  *
  * @param statement The original INSERT statement
  * @param shardKeyColumn The name of the shard key column
- * @param numShards Total number of shards
+ * @param shardIds Array of actual shard IDs (may not be 0-indexed after resharding)
  * @param params Query parameters
  * @returns Map of shardId -> { statement: INSERT statement, params: filtered params }
  */
 function groupInsertByShards(
 	statement: InsertStatement,
 	shardKeyColumn: string,
-	numShards: number,
+	shardIds: number[],
 	params: SqlParam[],
 ): Map<number, { statement: InsertStatement; params: SqlParam[] }> {
 	// Map of shardId -> { rows, paramIndices }
@@ -57,9 +57,7 @@ function groupInsertByShards(
 
 
 	if (shardKeyIndex === -1) {
-		logger.warn('Shard key column not found in INSERT, may not distribute optimally', {
-			shardKey: shardKeyColumn,
-		});
+		logger.warn`Shard key column not found in INSERT, may not distribute optimally ${{shardKey: shardKeyColumn}}`;
 		// If shard key not in INSERT, can't determine target shard
 		return new Map();
 	}
@@ -72,7 +70,7 @@ function groupInsertByShards(
 		let shardKeyValue: any;
 
 		if (!shardKeyExpr) {
-			logger.warn('Missing shard key value in INSERT row', { rowIndex });
+			logger.warn`Missing shard key value in INSERT row ${{rowIndex}}`;
 			return;
 		}
 
@@ -87,7 +85,9 @@ function groupInsertByShards(
 		}
 
 		// Hash the shard key value to determine target shard
-		const shardId = hashToShardId(shardKeyValue, numShards);
+		// Map the hash index to the actual shard ID (handles non-0-indexed shards after resharding)
+		const hashIndex = hashToShardId(shardKeyValue, shardIds.length);
+		const shardId = shardIds[hashIndex]!;
 
 		// Track parameters for this row
 		const rowParamIndices = valueList
@@ -226,31 +226,24 @@ export async function handleInsert(
 ): Promise<QueryResult> {
 	const { topology, databaseId, storage } = context;
 	const tableName = statement.table.name;
-	logger.setTags({ table: tableName });
 
 	// STEP 1: Get cached query plan data
 	const { planData } = await getCachedQueryPlanData(context, tableName, statement, params);
 
-	logger.info('Query plan determined for INSERT', {
-		shardsSelected: planData.shardsToQuery.length,
-		indexesUsed: planData.virtualIndexes.length,
-		shardKey: planData.shardKey,
-	});
+	logger.info`Query plan determined for INSERT ${{shardsSelected: planData.shardsToQuery.length}} ${{indexesUsed: planData.virtualIndexes.length}} ${{shardKey: planData.shardKey}}`;
 
 	const allShards = planData.shardsToQuery;
 
 	// STEP 2: Group INSERT rows by target shard based on shard key
-	const perShardStatements = groupInsertByShards(statement, planData.shardKey, allShards.length, params);
+	// Pass actual shard IDs (not just count) to handle non-0-indexed shards after resharding
+	const shardIds = allShards.map(s => s.shard_id).sort((a, b) => a - b);
+	const perShardStatements = groupInsertByShards(statement, planData.shardKey, shardIds, params);
 
 
 	// If we couldn't group rows (shard key not in INSERT), execute on all shards
 	const shardsToQuery = perShardStatements.size === 0 ? allShards : allShards.filter(s => perShardStatements.has(s.shard_id));
 
-	logger.info('INSERT rows grouped by shard', {
-		shardsWithRows: perShardStatements.size,
-		totalShards: allShards.length,
-		shardsToQueryLength: shardsToQuery.length,
-	});
+	logger.info`INSERT rows grouped by shard ${{shardsWithRows: perShardStatements.size}} ${{totalShards: allShards.length}} ${{shardsToQueryLength: shardsToQuery.length}}`;
 
 	// STEP 3: Log write if resharding is in progress
 	await logWriteIfResharding(tableName, statement.type, query, params, context);
@@ -293,7 +286,7 @@ export async function handleInsert(
 		};
 	} else {
 		// Fallback: execute on all shards if we can't determine distribution
-		logger.warn('Could not determine shard distribution, executing on all shards', { tableName });
+		logger.warn`Could not determine shard distribution, executing on all shards ${{tableName}}`;
 		const queries = prepareIndexMaintenanceQueries(
 			planData.virtualIndexes.length > 0,
 			statement,
@@ -303,9 +296,7 @@ export async function handleInsert(
 		execResult = await executeOnShards(context, shardsToQuery, queries);
 	}
 
-	logger.info('Shard execution completed for INSERT', {
-		shardsQueried: shardsToQuery.length,
-	});
+	logger.info`Shard execution completed for INSERT ${{shardsQueried: shardsToQuery.length}}`;
 
 	// STEP 5: Dispatch index maintenance if needed
 	if (planData.virtualIndexes.length > 0) {
@@ -334,10 +325,7 @@ export async function handleInsert(
 	// Add shard statistics
 	result.shardStats = execResult.shardStats;
 
-	logger.info('INSERT query completed', {
-		shardsQueried: shardsToQuery.length,
-		rowsAffected: result.rowsAffected,
-	});
+	logger.info`INSERT query completed ${{shardsQueried: shardsToQuery.length}} ${{rowsAffected: result.rowsAffected}}`;
 
 	return result;
 }

@@ -14,9 +14,7 @@ export async function handleShowTables(context: QueryHandlerContext): Promise<Qu
 		const topologyStub = topology.get(topologyId);
 		const topologyData = await topologyStub.getTopology();
 
-		logger.info('SHOW TABLES executed', {
-			tableCount: topologyData.tables.length,
-		});
+		logger.info`SHOW TABLES executed ${{tableCount: topologyData.tables.length}}`;
 
 		// Return table names
 		const rows = topologyData.tables.map((table) => ({
@@ -83,19 +81,11 @@ export async function handleDescribeTable(
 				})) as any;
 				schema = result.rows as any[];
 			} catch (error) {
-				logger.warn('Failed to fetch schema from storage', {
-					table: tableName,
-					error: (error as Error).message,
-				});
+				logger.warn`Failed to fetch schema from storage ${{table: tableName}} ${{error: (error as Error).message}}`;
 			}
 		}
 
-		logger.info('DESCRIBE TABLE executed', {
-			table: tableName,
-			shardCount: tableShards.length,
-			indexCount: tableIndexes.length,
-			columnCount: schema.length,
-		});
+		logger.info`DESCRIBE TABLE executed ${{table: tableName}} ${{shardCount: tableShards.length}} ${{indexCount: tableIndexes.length}} ${{columnCount: schema.length}}`;
 
 		// Build response
 		const rows = [
@@ -198,11 +188,7 @@ export async function handleTableStats(
 						status: shard.status,
 					};
 				} catch (error) {
-					logger.warn('Failed to get shard stats', {
-						table: tableName,
-						shard: shard.shard_id,
-						error: (error as Error).message,
-					});
+					logger.warn`Failed to get shard stats ${{table: tableName}} ${{shard: shard.shard_id}} ${{error: (error as Error).message}}`;
 					return {
 						shard_id: shard.shard_id,
 						node_id: shard.node_id,
@@ -216,11 +202,7 @@ export async function handleTableStats(
 
 		const totalRows = shardStats.reduce((sum, s) => sum + (s.row_count || 0), 0);
 
-		logger.info('TABLE STATS executed', {
-			table: tableName,
-			totalRows,
-			shardCount: tableShards.length,
-		});
+		logger.info`TABLE STATS executed ${{table: tableName}} ${{totalRows}} ${{shardCount: tableShards.length}}`;
 
 		return {
 			rows: [

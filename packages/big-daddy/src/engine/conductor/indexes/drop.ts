@@ -33,7 +33,7 @@ export async function handleDropIndex(
 		// If index not found
 		if (!index) {
 			if (ifExists) {
-				logger.info('DROP INDEX IF EXISTS - index not found', { indexName });
+				logger.info`DROP INDEX IF EXISTS - index not found ${{indexName}}`;
 				return {
 					rows: [],
 					rowsAffected: 0,
@@ -64,20 +64,12 @@ export async function handleDropIndex(
 					});
 				} catch (error) {
 					// Log but don't fail - SQLite might not have the index on this shard
-					logger.warn('Failed to drop index on storage node', {
-						indexName,
-						nodeId,
-						error: (error as Error).message,
-					});
+					logger.warn`Failed to drop index on storage node ${{indexName}} ${{nodeId}} ${{error: (error as Error).message}}`;
 				}
 			}),
 		);
 
-		logger.info('Index dropped successfully', {
-			indexName,
-			table: actualTableName,
-			nodesAffected: uniqueNodes.length,
-		});
+		logger.info`Index dropped successfully ${{indexName}} ${{table: actualTableName}} ${{nodesAffected: uniqueNodes.length}}`;
 
 		return {
 			rows: [],
@@ -113,10 +105,7 @@ export async function handleShowIndexes(
 		// Get indexes for this table
 		const indexes = topologyData.virtual_indexes.filter((i) => i.table_name === tableName);
 
-		logger.info('SHOW INDEXES executed', {
-			table: tableName,
-			indexCount: indexes.length,
-		});
+		logger.info`SHOW INDEXES executed ${{table: tableName}} ${{indexCount: indexes.length}}`;
 
 		const rows = indexes.map((idx) => ({
 			index_name: idx.index_name,

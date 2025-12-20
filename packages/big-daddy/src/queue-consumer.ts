@@ -7,7 +7,6 @@
  * - ReshardingChangeLog: Change log entries (batched and processed during resharding replay)
  */
 
-import { withLogTags } from 'workers-tagged-logger';
 import { logger } from './logger';
 import type { IndexJob, ReshardingChangeLog, MessageBatch } from './engine/queue/types';
 import { processBuildIndexJob, processReshardTableJob } from './engine/async-jobs';
@@ -17,69 +16,45 @@ import { processBuildIndexJob, processReshardTableJob } from './engine/async-job
  * Receives batches of up to 10 messages and processes them
  */
 export async function queueHandler(batch: MessageBatch<IndexJob>, env: Env, batchCorrelationId?: string): Promise<void> {
-	return withLogTags({ source: 'QueueConsumer' }, async () => {
-		const cid = batchCorrelationId || crypto.randomUUID();
-		logger.setTags({
-			correlationId: cid,
-			requestId: cid,
-			component: 'QueueConsumer',
-			operation: 'queueHandler',
-		});
+	const cid = batchCorrelationId || crypto.randomUUID();
+	const source = 'QueueConsumer';
+	const component = 'QueueConsumer';
+	const operation = 'queueHandler';
+	const batchSize = batch.messages.length;
+	const queue = batch.queue;
 
-		logger.info('Processing queue batch', {
-			batchSize: batch.messages.length,
-			queue: batch.queue,
-		});
+	logger.info`Processing queue batch ${{source}} ${{component}} ${{operation}} ${{correlationId: cid}} ${{requestId: cid}} ${{batchSize}} ${{queue}}`;
 
-		// Process messages in parallel where possible
-		const results = await Promise.allSettled(
-			batch.messages.map(async (message) => {
-				try {
-					const jobCorrelationId = message.body.correlation_id || cid;
-					logger.setTags({
-						correlationId: jobCorrelationId,
-						requestId: jobCorrelationId,
-						jobId: message.id,
-						jobType: message.body.type,
-					});
+	// Process messages in parallel where possible
+	const results = await Promise.allSettled(
+		batch.messages.map(async (message) => {
+			try {
+				const jobCorrelationId = message.body.correlation_id || cid;
+				const jobId = message.id;
+				const jobType = message.body.type;
+				const attempts = message.attempts;
 
-					logger.info('Processing queue message', {
-						jobId: message.id,
-						jobType: message.body.type,
-						attempts: message.attempts,
-					});
+				logger.info`Processing queue message ${{source}} ${{component}} ${{correlationId: jobCorrelationId}} ${{requestId: jobCorrelationId}} ${{jobId}} ${{jobType}} ${{attempts}}`;
 
-					await processIndexJob(message.body, env, jobCorrelationId);
+				await processIndexJob(message.body, env, jobCorrelationId);
 
-					logger.info('Successfully processed job', {
-						jobId: message.id,
-						jobType: message.body.type,
-						status: 'success',
-					});
-				} catch (error) {
-					logger.error('Failed to process job', {
-						jobId: message.id,
-						jobType: message.body.type,
-						error: error instanceof Error ? error.message : String(error),
-						status: 'failure',
-					});
-					// Throwing will cause the message to be retried
-					throw error;
-				}
-			}),
-		);
+				const status = 'success';
+				logger.info`Successfully processed job ${{source}} ${{component}} ${{jobId}} ${{jobType}} ${{status}}`;
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				const status = 'failure';
+				logger.error`Failed to process job ${{source}} ${{component}} ${{jobId}} ${{jobType}} ${{error: errorMsg}} ${{status}}`;
+				throw error;
+			}
+		}),
+	);
 
-		// Log summary
-		const successful = results.filter((r) => r.status === 'fulfilled').length;
-		const failed = results.filter((r) => r.status === 'rejected').length;
+	// Log summary
+	const successful = results.filter((r) => r.status === 'fulfilled').length;
+	const failed = results.filter((r) => r.status === 'rejected').length;
+	const finalStatus = failed > 0 ? 'partial' : 'success';
 
-		logger.info('Batch processing complete', {
-			batchSize: batch.messages.length,
-			successful,
-			failed,
-			status: failed > 0 ? 'partial' : 'success',
-		});
-	});
+	logger.info`Batch processing complete ${{source}} ${{component}} ${{batchSize}} ${{successful}} ${{failed}} ${{status: finalStatus}}`;
 }
 
 /**
@@ -94,11 +69,8 @@ async function processIndexJob(job: IndexJob, env: Env, correlationId?: string):
 			await processReshardTableJob(job, env, correlationId);
 			break;
 		case 'resharding_change_log':
-			// Change log entries are batched and processed during Phase 3C
-			// They don't need individual processing - they're fetched from queue during replay
-			logger.debug('Change log entry queued for later replay', {
-				reshardingId: (job as ReshardingChangeLog).resharding_id,
-			});
+			const reshardingId = (job as ReshardingChangeLog).resharding_id;
+			logger.debug`Change log entry queued for later replay ${{reshardingId}}`;
 			break;
 		default:
 			throw new Error(`Unknown job type: ${(job as any).type}`);

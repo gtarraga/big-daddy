@@ -261,14 +261,9 @@ export class ReshardingOperations {
 					params: [shardId],
 				});
 
-				logger.info('Virtual shard data deleted from storage', { tableName, shardId, nodeId: shard.node_id });
+				logger.info`Virtual shard data deleted from storage ${{tableName}} ${{shardId}} ${{nodeId: shard.node_id}}`;
 			} catch (error) {
-				logger.error('Failed to delete virtual shard data from storage', {
-					tableName,
-					shardId,
-					nodeId: shard.node_id,
-					error: error instanceof Error ? error.message : String(error),
-				});
+				logger.error`Failed to delete virtual shard data from storage ${{tableName}} ${{shardId}} ${{nodeId: shard.node_id}} ${{error: error instanceof Error ? error.message : String(error)}}`;
 				// Continue to delete from topology even if storage deletion fails
 			}
 		}
@@ -280,7 +275,7 @@ export class ReshardingOperations {
 			shardId
 		);
 
-		logger.info('Virtual shard deleted', { tableName, shardId, previousStatus: shard.status });
+		logger.info`Virtual shard deleted ${{tableName}} ${{shardId}} ${{previousStatus: shard.status}}`;
 
 		return { success: true };
 	}
@@ -304,6 +299,6 @@ export class ReshardingOperations {
 			);
 		}
 
-		logger.info('Target shards marked as failed', { tableName, targetShardIds });
+		logger.info`Target shards marked as failed ${{tableName}} ${{targetShardIds}}`;
 	}
 }

@@ -10,7 +10,6 @@ import type {
 	DropTableStatement,
 	PragmaStatement,
 } from '@databases/sqlite-ast';
-import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../../logger';
 import { TopologyCache } from '../utils/topology-cache';
 import { buildQuery, getQueryType, extractTableName } from '../utils/ast-utils';
@@ -70,68 +69,60 @@ export class ConductorClient {
 	 * await conductor.sql`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`;
 	 */
 	sql = async <T = Record<string, any>>(strings: TemplateStringsArray, ...values: any[]): Promise<QueryResult<T>> => {
-		return withLogTags({ source: 'Conductor' }, async () => {
-			const startTime = Date.now();
-			const cid = this.correlationId;
+		const startTime = Date.now();
+		const cid = this.correlationId;
+		const source = 'Conductor';
+		const component = 'Conductor';
+		const operation = 'sql';
+		const databaseId = this.databaseId;
 
-			logger.setTags({
-				correlationId: cid,
-				requestId: cid,
-				component: 'Conductor',
-				operation: 'sql',
-				databaseId: this.databaseId,
-			});
+		// STEP 1: Parse - Build and parse the SQL query
+		const { query, params } = buildQuery(strings, values);
+		const statement = parse(query);
 
-			// STEP 1: Parse - Build and parse the SQL query
-			const { query, params } = buildQuery(strings, values);
-			const statement = parse(query);
+		logger.info`Executing query ${{source}} ${{component}} ${{operation}} ${{correlationId: cid}} ${{requestId: cid}} ${{databaseId}}`;
 
-			logger.info('Executing query', {
-			});
+		// Create handler context
+		const context: QueryHandlerContext = {
+			databaseId: this.databaseId,
+			correlationId: cid,
+			storage: this.storage,
+			topology: this.topology,
+			indexQueue: this.indexQueue,
+			env: this.env,
+			cache: this.cache,
+		};
 
-			// Create handler context
-			const context: QueryHandlerContext = {
-				databaseId: this.databaseId,
-				correlationId: cid,
-				storage: this.storage,
-				topology: this.topology,
-				indexQueue: this.indexQueue,
-				env: this.env,
-				cache: this.cache,
-			};
+		// STEP 2: Route to appropriate handler based on query type
+		let result: QueryResult<T>;
 
-			// STEP 2: Route to appropriate handler based on query type
-			let result: QueryResult<T>;
+		if (statement.type === 'SelectStatement') {
+			result = (await handleSelect(statement, query, params, context)) as QueryResult<T>;
+		} else if (statement.type === 'InsertStatement') {
+			result = (await handleInsert(statement, query, params, context)) as QueryResult<T>;
+		} else if (statement.type === 'UpdateStatement') {
+			result = (await handleUpdate(statement, query, params, context)) as QueryResult<T>;
+		} else if (statement.type === 'DeleteStatement') {
+			result = (await handleDelete(statement, query, params, context)) as QueryResult<T>;
+		} else if (statement.type === 'CreateTableStatement') {
+			result = (await handleCreateTable(statement, query, context)) as QueryResult<T>;
+		} else if (statement.type === 'DropTableStatement') {
+			result = (await handleDropTable(statement, context)) as QueryResult<T>;
+		} else if (statement.type === 'CreateIndexStatement') {
+			result = (await handleCreateIndex(statement, context)) as QueryResult<T>;
+		} else if (statement.type === 'PragmaStatement') {
+			result = (await handlePragma(statement, query, context)) as QueryResult<T>;
+		} else {
+			throw new Error(`Unsupported statement type: ${statement.type}`);
+		}
 
-			if (statement.type === 'SelectStatement') {
-				result = (await handleSelect(statement, query, params, context)) as QueryResult<T>;
-			} else if (statement.type === 'InsertStatement') {
-				result = (await handleInsert(statement, query, params, context)) as QueryResult<T>;
-			} else if (statement.type === 'UpdateStatement') {
-				result = (await handleUpdate(statement, query, params, context)) as QueryResult<T>;
-			} else if (statement.type === 'DeleteStatement') {
-				result = (await handleDelete(statement, query, params, context)) as QueryResult<T>;
-			} else if (statement.type === 'CreateTableStatement') {
-				result = (await handleCreateTable(statement, query, context)) as QueryResult<T>;
-			} else if (statement.type === 'DropTableStatement') {
-				result = (await handleDropTable(statement, context)) as QueryResult<T>;
-			} else if (statement.type === 'CreateIndexStatement') {
-				result = (await handleCreateIndex(statement, context)) as QueryResult<T>;
-			} else if (statement.type === 'PragmaStatement') {
-				result = (await handlePragma(statement, query, context)) as QueryResult<T>;
-			} else {
-				throw new Error(`Unsupported statement type: ${statement.type}`);
-			}
+		const duration = Date.now() - startTime;
+		const rowCount = result.rows.length;
+		const rowsAffected = result.rowsAffected;
 
-			const duration = Date.now() - startTime;
-			logger.info('Query completed', {
-				duration,
-				rowCount: result.rows.length,
-				rowsAffected: result.rowsAffected,
-			});
+		logger.info`Query completed ${{source}} ${{component}} ${{databaseId}} ${{duration}} ${{rowCount}} ${{rowsAffected}}`;
 
-			return result;
-		});
+		return result;
 	};
 }
 

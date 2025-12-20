@@ -61,10 +61,7 @@ export async function handleAlterTable(
 				},
 			};
 
-			logger.info('ALTER TABLE RENAME initiated', {
-				oldName: tableName,
-				newName: newTableName,
-			});
+			logger.info`ALTER TABLE RENAME initiated ${{oldName: tableName}} ${{newName: newTableName}}`;
 		} else if (alterationType === 'MODIFY_BLOCK_SIZE') {
 			const newBlockSize = alterationValue as number;
 
@@ -84,11 +81,7 @@ export async function handleAlterTable(
 				},
 			};
 
-			logger.info('ALTER TABLE MODIFY block_size', {
-				table: tableName,
-				oldBlockSize: tableMetadata.block_size,
-				newBlockSize,
-			});
+			logger.info`ALTER TABLE MODIFY block_size ${{table: tableName}} ${{oldBlockSize: tableMetadata.block_size}} ${{newBlockSize}}`;
 		} else {
 			throw new Error(`Unsupported ALTER operation: ${alterationType}`);
 		}
@@ -96,10 +89,7 @@ export async function handleAlterTable(
 		// Update topology
 		await topologyStub.updateTopology(updateData);
 
-		logger.info('ALTER TABLE completed successfully', {
-			table: tableName,
-			operation: alterationType,
-		});
+		logger.info`ALTER TABLE completed successfully ${{table: tableName}} ${{operation: alterationType}}`;
 
 		return {
 			rows: [],
@@ -149,10 +139,7 @@ export async function handleReshardTable(
 
 		// Check if shard count is the same
 		if (newShardCount === tableMetadata.num_shards) {
-			logger.warn('Requested shard count is same as current', {
-				table: tableName,
-				currentShards: tableMetadata.num_shards,
-			});
+			logger.warn`Requested shard count is same as current ${{table: tableName}} ${{currentShards: tableMetadata.num_shards}}`;
 			return {
 				rows: [],
 				rowsAffected: 0,
@@ -163,12 +150,7 @@ export async function handleReshardTable(
 		const changeLogId = crypto.randomUUID();
 		const newShards = await topologyStub.createPendingShards(tableName, newShardCount, changeLogId);
 
-		logger.info('Pending shards created for resharding', {
-			table: tableName,
-			oldShardCount: tableMetadata.num_shards,
-			newShardCount: newShards.length,
-			changeLogId,
-		});
+		logger.info`Pending shards created for resharding ${{table: tableName}} ${{oldShardCount: tableMetadata.num_shards}} ${{newShardCount: newShards.length}} ${{changeLogId}}`;
 
 		// Phase 2: Enqueue resharding jobs for each active source shard
 		if (indexQueue) {
@@ -193,10 +175,7 @@ export async function handleReshardTable(
 			}
 		}
 
-		logger.info('Resharding jobs enqueued', {
-			table: tableName,
-			changeLogId,
-		});
+		logger.info`Resharding jobs enqueued ${{table: tableName}} ${{changeLogId}}`;
 
 		return {
 			rows: [

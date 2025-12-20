@@ -1,11 +1,11 @@
 /**
  * Centralized logger for Big Daddy database system
  *
- * Uses workers-tagged-logger for structured logging with correlation IDs
+ * Uses hatchlet for structured logging with correlation IDs
  * and tag-based context tracking across distributed Durable Objects.
  */
 
-import { WorkersLogger } from 'workers-tagged-logger'
+import { Logger } from 'hatchlet'
 
 /**
  * Standard log tags used throughout the Big Daddy system
@@ -53,10 +53,4 @@ export type BigDaddyLogTags = {
  * This logger should be used throughout the application with structured
  * tags to enable effective debugging and analytics.
  */
-export const logger = new WorkersLogger<BigDaddyLogTags>({
-	// In production, we might want to set minimumLogLevel to 'info' or 'warn'
-	// For now, log everything during development
-	minimumLogLevel: 'debug',
-	// Enable debug mode to see internal warnings during development
-	debug: true,
-})
+export const logger = new Logger()

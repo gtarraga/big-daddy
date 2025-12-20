@@ -12,7 +12,6 @@
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { withLogTags } from 'workers-tagged-logger';
 import { Hono } from 'hono';
 import { logger } from './logger';
 import { createConductor } from './engine/conductor';
@@ -80,64 +79,51 @@ export interface BigDaddyEnv {
  * ```
  */
 export async function createConnection(databaseId: string, config: ConnectionConfig, env: BigDaddyEnv): Promise<SqlFunction> {
-	return withLogTags({ source: 'createConnection' }, async () => {
-		const cid = config.correlationId || crypto.randomUUID();
+	const cid = config.correlationId || crypto.randomUUID();
+	const source = 'createConnection';
+	const component = 'createConnection';
+	const nodes = config.nodes;
 
-		logger.setTags({
-			correlationId: cid,
-			requestId: cid,
-			databaseId,
-			component: 'createConnection',
-		});
-
-		logger.debug('Creating connection', {
-			nodes: config.nodes,
-		});
+	logger.debug`Creating connection ${{source}} ${{component}} ${{correlationId: cid}} ${{requestId: cid}} ${{databaseId}} ${{nodes}}`;
 
 		// Get the Topology DO stub
 		const topologyId = env.TOPOLOGY.idFromName(databaseId);
 		const topologyStub = env.TOPOLOGY.get(topologyId);
 
-		// Try to check if topology exists by calling getTopology
-		// If it throws an error about topology not being created, we'll create it
-		try {
-			const topologyData = await topologyStub.getTopology();
+	// Try to check if topology exists by calling getTopology
+	// If it throws an error about topology not being created, we'll create it
+	try {
+		const topologyData = await topologyStub.getTopology();
+		const existingNodes = topologyData.storage_nodes.length;
 
-			logger.debug('Topology already exists', {
-				nodes: topologyData.storage_nodes.length,
-			});
-		} catch (error) {
-			// Check if the error is about topology not being created
-			if (error instanceof Error && error.message.includes('Topology not created')) {
-				logger.info('Topology does not exist, creating', {
-					nodes: config.nodes,
-				});
+		logger.debug`Topology already exists ${{source}} ${{component}} ${{databaseId}} ${{nodes: existingNodes}}`;
+	} catch (error) {
+		// Check if the error is about topology not being created
+		if (error instanceof Error && error.message.includes('Topology not created')) {
+			logger.info`Topology does not exist, creating ${{source}} ${{component}} ${{databaseId}} ${{nodes}}`;
 
-				// Create topology with the specified number of nodes
-				const result = await topologyStub.create(config.nodes);
+			// Create topology with the specified number of nodes
+			const result = await topologyStub.create(config.nodes);
 
-				if (!result.success) {
-					throw new Error(`Failed to create topology: ${result.error}`);
-				}
-
-				logger.info('Topology created successfully', {
-					nodes: config.nodes,
-				});
-			} else {
-				// Re-throw if it's a different error
-				throw error;
+			if (!result.success) {
+				throw new Error(`Failed to create topology: ${result.error}`);
 			}
+
+			logger.info`Topology created successfully ${{source}} ${{component}} ${{databaseId}} ${{nodes}}`;
+		} else {
+			// Re-throw if it's a different error
+			throw error;
 		}
+	}
 
-		const client = createConductor(databaseId, cid, env);
+	const client = createConductor(databaseId, cid, env);
 
-		// Return the sql function bound with the conductor client
-		const sql: SqlFunction = async (strings: TemplateStringsArray, ...values: any[]) => {
-			return client.sql(strings, ...values);
-		};
+	// Return the sql function bound with the conductor client
+	const sql: SqlFunction = async (strings: TemplateStringsArray, ...values: any[]) => {
+		return client.sql(strings, ...values);
+	};
 
-		return sql;
-	});
+	return sql;
 }
 
 /**
@@ -260,33 +246,23 @@ export default class BigDaddy extends WorkerEntrypoint<Env> {
 	 * Queue handler for processing virtual index jobs
 	 */
 	override async queue(batch: MessageBatch<unknown>): Promise<void> {
-		return withLogTags({ source: 'BigDaddy' }, async () => {
-			const correlationId = crypto.randomUUID();
-			logger.setTags({
-				correlationId,
-				requestId: correlationId,
-				component: 'BigDaddy',
-				operation: 'queue',
-			});
+		const correlationId = crypto.randomUUID();
+		const source = 'BigDaddy';
+		const component = 'BigDaddy';
+		const operation = 'queue';
+		const batchSize = batch.messages.length;
 
-			logger.info('Processing queue batch', {
-				batchSize: batch.messages.length,
-			});
+		logger.info`Processing queue batch ${{source}} ${{component}} ${{operation}} ${{correlationId}} ${{requestId: correlationId}} ${{batchSize}}`;
 
-			try {
-				await queueHandler(batch as MessageBatch<IndexJob>, this.env, correlationId);
-				logger.info('Queue batch processed successfully', {
-					batchSize: batch.messages.length,
-					status: 'success',
-				});
-			} catch (error) {
-				logger.error('Queue batch processing failed', {
-					batchSize: batch.messages.length,
-					status: 'failure',
-					error: error instanceof Error ? error.message : String(error),
-				});
-				throw error;
-			}
-		});
+		try {
+			await queueHandler(batch as MessageBatch<IndexJob>, this.env, correlationId);
+			const status = 'success';
+			logger.info`Queue batch processed successfully ${{source}} ${{component}} ${{batchSize}} ${{status}}`;
+		} catch (error) {
+			const status = 'failure';
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			logger.error`Queue batch processing failed ${{source}} ${{component}} ${{batchSize}} ${{status}} ${{error: errorMsg}}`;
+			throw error;
+		}
 	}
 }

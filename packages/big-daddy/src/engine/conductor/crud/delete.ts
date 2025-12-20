@@ -57,15 +57,11 @@ export async function handleDelete(
 	context: QueryHandlerContext,
 ): Promise<QueryResult> {
 	const tableName = statement.table.name;
-	logger.setTags({ table: tableName });
 
 	// STEP 1: Get cached query plan data
 	const { planData } = await getCachedQueryPlanData(context, tableName, statement, params);
 
-	logger.info('Query plan determined for DELETE', {
-		shardsSelected: planData.shardsToQuery.length,
-		indexesUsed: planData.virtualIndexes.length,
-	});
+	logger.info`Query plan determined for DELETE ${{shardsSelected: planData.shardsToQuery.length}} ${{indexesUsed: planData.virtualIndexes.length}}`;
 
 	const shardsToQuery = planData.shardsToQuery;
 
@@ -87,9 +83,7 @@ export async function handleDelete(
 	// STEP 4: Execute on shards
 	const execResult = await executeOnShards(context, shardsToQuery, queries);
 
-	logger.info('Shard execution completed for DELETE', {
-		shardsQueried: shardsToQuery.length,
-	});
+	logger.info`Shard execution completed for DELETE ${{shardsQueried: shardsToQuery.length}}`;
 
 	// STEP 5: Dispatch index maintenance if needed
 	if (planData.virtualIndexes.length > 0) {
@@ -139,10 +133,7 @@ export async function handleDelete(
 		duration: 0,
 	}));
 
-	logger.info('DELETE query completed', {
-		shardsQueried: shardsToQuery.length,
-		rowsAffected: result.rowsAffected,
-	});
+	logger.info`DELETE query completed ${{shardsQueried: shardsToQuery.length}} ${{rowsAffected: result.rowsAffected}}`;
 
 	return result;
 }

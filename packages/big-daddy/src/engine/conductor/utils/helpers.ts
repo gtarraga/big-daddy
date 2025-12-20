@@ -37,9 +37,7 @@ export function injectVirtualShard(
 
 		return { modifiedStatement: modifiedStatement || statement, modifiedParams };
 	} catch (error) {
-		logger.warn('Failed to inject _virtualShard filter, using original statement', {
-			error: error instanceof Error ? error.message : String(error),
-		});
+		logger.warn`Failed to inject _virtualShard filter, using original statement ${{error: error instanceof Error ? error.message : String(error)}}`;
 		return { modifiedStatement: statement, modifiedParams: params };
 	}
 }

@@ -18,8 +18,8 @@
 	"dependencies": {
 		"@databases/sqlite-ast": "workspace:*",
 		"effect": "^3.19.3",
-		"hono": "^4.10.4",
-		"workers-tagged-logger": "^0.13.7"
+		"hatchlet": "^0.0.3",
+		"hono": "^4.10.4"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.10.3",

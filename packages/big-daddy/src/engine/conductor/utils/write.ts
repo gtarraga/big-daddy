@@ -447,11 +447,7 @@ export async function logWriteIfResharding(
 		}
 	} catch (error) {
 		// Log but don't fail - write logging should not block query execution
-		logger.warn('Failed to log write during resharding', {
-			table: tableName,
-			operation,
-			error: (error as Error).message,
-		});
+		logger.warn`Failed to log write during resharding ${{table: tableName}} ${{operation}} ${{error: (error as Error).message}}`;
 	}
 }
 
@@ -504,9 +500,7 @@ export async function enqueueIndexMaintenanceJob(
 			await indexQueue.send(job);
 		}
 	} catch (error) {
-		logger.error('Failed to enqueue index maintenance job', {
-			error: (error as Error).message,
-		});
+		logger.error`Failed to enqueue index maintenance job ${{error: (error as Error).message}}`;
 		// Don't throw - index operations should not block queries
 	}
 }

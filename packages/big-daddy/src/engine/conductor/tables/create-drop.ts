@@ -208,10 +208,7 @@ export async function handleDropTable(
 		);
 
 		// Step 7: Return success result
-		logger.info('Table dropped successfully', {
-			table: tableName,
-			shardsRemoved: tableShards.length,
-		});
+		logger.info`Table dropped successfully ${{table: tableName}} ${{shardsRemoved: tableShards.length}}`;
 
 		return {
 			rows: [],

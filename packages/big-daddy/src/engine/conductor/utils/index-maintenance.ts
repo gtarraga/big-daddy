@@ -138,10 +138,7 @@ export async function dispatchIndexSyncingFromQueryResults(
 
 		await indexQueue.send(job);
 
-		logger.info('Index maintenance events queued', {
-			operationType,
-			eventCount: events.length,
-		});
+		logger.info`Index maintenance events queued ${{operationType}} ${{eventCount: events.length}}`;
 	}
 }
 

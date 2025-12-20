@@ -12,7 +12,6 @@
  */
 
 import { Effect, Data } from 'effect';
-import { withLogTags } from 'workers-tagged-logger';
 import { logger } from '../../logger';
 import { createConductor } from '../../index';
 import type { IndexBuildJob } from '../queue/types';
@@ -81,8 +80,6 @@ function processBuildIndexJobEffect(
 	const topologyStub = env.TOPOLOGY.get(topologyId);
 
 	return Effect.gen(function* () {
-		logger.setTags({ table: job.table_name, indexName: job.index_name });
-
 		const conductor = createConductor(job.database_id, correlationId ?? '', env);
 
 		// 1. Query distinct values with shard info via conductor
@@ -178,28 +175,26 @@ export async function processBuildIndexJob(
 	env: Env,
 	correlationId?: string
 ): Promise<void> {
-	return withLogTags({ source: 'QueueConsumer' }, async () => {
-		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(job.database_id));
+	const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(job.database_id));
 
-		const effect = processBuildIndexJobEffect(job, env, correlationId).pipe(
-			Effect.catchAll((error) =>
-				Effect.gen(function* () {
-					const errorMessage = errorToMessage(error);
+	const effect = processBuildIndexJobEffect(job, env, correlationId).pipe(
+		Effect.catchAll((error) =>
+			Effect.gen(function* () {
+				const errorMessage = errorToMessage(error);
 
-					// Update index status to 'failed'
-					yield* Effect.tryPromise({
-						try: () => topologyStub.updateIndexStatus(job.index_name, 'failed', errorMessage),
-						catch: () => new Error('Failed to update index status to failed'),
-					});
+				// Update index status to 'failed'
+				yield* Effect.tryPromise({
+					try: () => topologyStub.updateIndexStatus(job.index_name, 'failed', errorMessage),
+					catch: () => new Error('Failed to update index status to failed'),
+				});
 
-					// Error will be logged automatically with context annotations
-					return yield* Effect.fail(new Error(errorMessage));
-				})
-			),
-			// Add source annotation to all logs and errors
-			Effect.annotateLogs({ source: 'QueueConsumer', jobType: 'build_index' })
-		);
+				// Error will be logged automatically with context annotations
+				return yield* Effect.fail(new Error(errorMessage));
+			})
+		),
+		// Add source annotation to all logs and errors
+		Effect.annotateLogs({ source: 'QueueConsumer', jobType: 'build_index' })
+	);
 
-		return Effect.runPromise(effect);
-	});
+	return Effect.runPromise(effect);
 }

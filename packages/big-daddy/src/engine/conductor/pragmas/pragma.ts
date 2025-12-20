@@ -65,11 +65,7 @@ async function handleReshardTable(stmt: PragmaStatement, context: QueryHandlerCo
 	const changeLogId = crypto.randomUUID();
 	const newShards = await topologyStub.createPendingShards(tableName, shardCount, changeLogId);
 
-	logger.info('Pending shards created for resharding', {
-		table: tableName,
-		shardCount: newShards.length,
-		changeLogId,
-	});
+	logger.info`Pending shards created for resharding ${{table: tableName}} ${{shardCount: newShards.length}} ${{changeLogId}}`;
 
 	// Get table metadata for the resharding job
 	const topologyData = await topologyStub.getTopology();
@@ -107,20 +103,11 @@ async function handleReshardTable(stmt: PragmaStatement, context: QueryHandlerCo
 				correlation_id: context.correlationId,
 			} as ReshardTableJob);
 
-			logger.info('Resharding job enqueued for source shard', {
-				table: tableName,
-				jobId,
-				sourceShardId,
-				targetShardIds: newShards.map((s) => s.shard_id),
-			});
+			logger.info`Resharding job enqueued for source shard ${{table: tableName}} ${{jobId}} ${{sourceShardId}} ${{targetShardIds: newShards.map((s) => s.shard_id)}}`;
 		}
 	}
 
-	logger.info('All resharding jobs enqueued', {
-		table: tableName,
-		sourceShardCount: sourceShardIds.length,
-		targetShardCount: newShards.length,
-	});
+	logger.info`All resharding jobs enqueued ${{table: tableName}} ${{sourceShardCount: sourceShardIds.length}} ${{targetShardCount: newShards.length}}`;
 
 	return {
 		rows: [

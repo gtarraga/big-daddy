@@ -73,7 +73,6 @@ export async function handleUpdate(
 	context: QueryHandlerContext,
 ): Promise<QueryResult> {
 	const tableName = statement.table.name;
-	logger.setTags({ table: tableName });
 
 	// STEP 1: Get cached query plan data
 	const { planData } = await getCachedQueryPlanData(
@@ -83,10 +82,7 @@ export async function handleUpdate(
 		params,
 	);
 
-	logger.info('Query plan determined for UPDATE', {
-		shardsSelected: planData.shardsToQuery.length,
-		indexesUsed: planData.virtualIndexes.length,
-	});
+	logger.info`Query plan determined for UPDATE ${{shardsSelected: planData.shardsToQuery.length}} ${{indexesUsed: planData.virtualIndexes.length}}`;
 
 	const shardsToQuery = planData.shardsToQuery;
 
@@ -112,9 +108,7 @@ export async function handleUpdate(
 	// STEP 4: Execute on shards
 	const execResult = await executeOnShards(context, shardsToQuery, queries);
 
-	logger.info('Shard execution completed for UPDATE', {
-		shardsQueried: shardsToQuery.length,
-	});
+	logger.info`Shard execution completed for UPDATE ${{shardsQueried: shardsToQuery.length}}`;
 
 	// STEP 5: Dispatch index maintenance if needed
 	if (planData.virtualIndexes.length > 0) {
@@ -167,10 +161,7 @@ export async function handleUpdate(
 		duration: 0,
 	}));
 
-	logger.info('UPDATE query completed', {
-		shardsQueried: shardsToQuery.length,
-		rowsAffected: result.rowsAffected,
-	});
+	logger.info`UPDATE query completed ${{shardsQueried: shardsToQuery.length}} ${{rowsAffected: result.rowsAffected}}`;
 
 	return result;
 }

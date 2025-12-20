@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { useWorkersLogger } from 'workers-tagged-logger';
 import type { BigDaddyLogTags } from './logger';
 import { HomePage } from './dashboard/home';
 import { DashboardPage } from './dashboard/database';
@@ -16,9 +15,6 @@ import { parseQueryWithAI } from './dashboard/utils/ai-query';
  */
 
 export const dashboard = new Hono<{ Bindings: Env }>();
-
-// Apply logger middleware to all dashboard routes
-dashboard.use('*', useWorkersLogger<BigDaddyLogTags>('Dashboard'));
 
 // Set custom HTML renderer
 dashboard.use('*', async (c, next) => {

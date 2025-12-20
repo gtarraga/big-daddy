@@ -27,8 +27,6 @@ export async function handleSelect(
 		throw new Error('Could not determine table name from SELECT query');
 	}
 
-	logger.setTags({ table: tableName });
-
 	// STEP 1: Get cached query plan data
 	// This determines which shards to query
 	const { planData, cacheHit } = await getCachedQueryPlanData(
@@ -38,11 +36,7 @@ export async function handleSelect(
 		params,
 	);
 
-	logger.info('Query plan determined for SELECT', {
-		cacheHit,
-		shardsSelected: planData.shardsToQuery.length,
-		indexesUsed: planData.virtualIndexes.length,
-	});
+	logger.info`Query plan determined for SELECT ${{cacheHit}} ${{shardsSelected: planData.shardsToQuery.length}} ${{indexesUsed: planData.virtualIndexes.length}}`;
 
 	const shardsToQuery = planData.shardsToQuery;
 
@@ -64,10 +58,7 @@ export async function handleSelect(
 	// Add shard statistics
 	result.shardStats = shardStats;
 
-	logger.info('SELECT query completed', {
-		shardsQueried: shardsToQuery.length,
-		rowCount: result.rows.length,
-	});
+	logger.info`SELECT query completed ${{shardsQueried: shardsToQuery.length}} ${{rowCount: result.rows.length}}`;
 
 	return result;
 }
