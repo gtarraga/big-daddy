@@ -1,33 +1,39 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createConnection } from '../../src/index';
 import { processBuildIndexJob } from '../../src/engine/async-jobs/build-index';
-import type { IndexBuildJob, IndexMaintenanceEventJob } from '../../src/engine/queue/types';
+import type { IndexBuildJob } from '../../src/engine/queue/types';
 
 /**
  * INSERT with Index Maintenance Tests
  *
- * These tests verify that INSERT operations properly queue index maintenance events.
+ * These tests verify that INSERT operations properly maintain index entries synchronously.
  *
- * Key insight: We capture index build jobs from the queue, process them immediately
- * to actually create the indexes in the topology, then verify that subsequent INSERTs
- * queue the correct index maintenance events.
+ * Key insight: Index maintenance is now synchronous - when an INSERT executes,
+ * the index entries are updated immediately in the Topology DO.
  */
 
 // Store all queue messages for inspection in tests
 let capturedQueueMessages: any[] = [];
 
-// Wrap the queue.send to capture calls
+// Save original queue.send to restore later
 const originalQueueSend = env.INDEX_QUEUE.send.bind(env.INDEX_QUEUE);
-env.INDEX_QUEUE.send = async (message: any) => {
-	capturedQueueMessages.push(message);
-	return originalQueueSend(message);
-};
 
 describe('INSERT with Index Maintenance', () => {
 	beforeEach(() => {
 		// Clear captured messages before each test
 		capturedQueueMessages = [];
+		// Intercept queue.send to capture calls WITHOUT calling original
+		// This prevents async background processing that breaks test isolation
+		env.INDEX_QUEUE.send = async (message: any) => {
+			capturedQueueMessages.push(message);
+			// Don't call original - we'll process manually to avoid async race conditions
+		};
+	});
+
+	afterEach(() => {
+		// Restore original queue.send to prevent hanging
+		env.INDEX_QUEUE.send = originalQueueSend;
 	});
 
 	/**
@@ -49,7 +55,16 @@ describe('INSERT with Index Maintenance', () => {
 		}
 	}
 
-	it('should queue index maintenance events when inserting rows with indexes', async () => {
+	/**
+	 * Helper: Get index entries from topology
+	 */
+	async function getIndexEntries(dbId: string) {
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		const topology = await topologyStub.getTopology();
+		return topology.virtual_index_entries;
+	}
+
+	it('should maintain index entries synchronously when inserting rows', async () => {
 		const dbId = 'test-insert-with-index';
 		const sql = await createConnection(dbId, { nodes: 2 }, env);
 
@@ -66,40 +81,30 @@ describe('INSERT with Index Maintenance', () => {
 		// Process the BUILD_INDEX job to actually create the index
 		await processPendingIndexBuilds();
 
-		// Now insert rows
+		// Now insert rows - index entries should be created synchronously
 		await sql`INSERT INTO users (id, email, name) VALUES (1, ${'alice@example.com'}, ${'Alice'})`;
 		await sql`INSERT INTO users (id, email, name) VALUES (2, ${'bob@example.com'}, ${'Bob'})`;
 		await sql`INSERT INTO users (id, email, name) VALUES (3, ${'charlie@example.com'}, ${'Charlie'})`;
 
-		// Filter for maintain_index_events messages (not build_index)
-		const indexEvents = capturedQueueMessages.filter((msg: any) => msg.type === 'maintain_index_events');
+		// Verify index entries were created in the topology
+		const entries = await getIndexEntries(dbId);
 
-		// Should have queued index maintenance events
-		expect(indexEvents.length).toBeGreaterThanOrEqual(1);
+		// Should have entries for all 3 emails
+		expect(entries.length).toBe(3);
 
-		// Collect all events from all jobs
-		let allEvents: any[] = [];
-		indexEvents.forEach((job: any) => {
-			allEvents = allEvents.concat(job.events);
-		});
-
-		// Should have at least 3 events for 3 inserted rows
-		expect(allEvents.length).toBeGreaterThanOrEqual(3);
-
-		// All should be 'add' operations
-		allEvents.forEach((event: any) => {
-			expect(event.operation).toBe('add');
-			expect(event.index_name).toBe('idx_email');
-		});
-
-		// Verify we have events for all inserted emails
-		const keyValues = allEvents.map((e: any) => e.key_value);
+		const keyValues = entries.map(e => e.key_value);
 		expect(keyValues).toContain('alice@example.com');
 		expect(keyValues).toContain('bob@example.com');
 		expect(keyValues).toContain('charlie@example.com');
+
+		// All entries should point to shard 0 (single shard before resharding)
+		entries.forEach(entry => {
+			const shardIds = JSON.parse(entry.shard_ids);
+			expect(shardIds).toContain(0);
+		});
 	});
 
-	it('should deduplicate index events when inserting duplicate index values', async () => {
+	it('should deduplicate index entries for duplicate values', async () => {
 		const dbId = 'test-insert-dedup';
 		const sql = await createConnection(dbId, { nodes: 1 }, env); // Single shard
 
@@ -115,41 +120,20 @@ describe('INSERT with Index Maintenance', () => {
 		// Process the BUILD_INDEX job
 		await processPendingIndexBuilds();
 
-		// Insert multiple rows with the same status value in separate statements
-		// Each INSERT statement will deduplicate within itself, but separate INSERTs
-		// will each produce events (to be aggregated in the queue)
+		// Insert multiple rows with the same status value
 		await sql`INSERT INTO orders (id, status) VALUES (1, ${'pending'})`;
 		await sql`INSERT INTO orders (id, status) VALUES (2, ${'pending'})`;
 		await sql`INSERT INTO orders (id, status) VALUES (3, ${'pending'})`;
 		await sql`INSERT INTO orders (id, status) VALUES (4, ${'completed'})`;
 
-		// Collect maintain_index_events
-		const indexEvents = capturedQueueMessages.filter((msg: any) => msg.type === 'maintain_index_events');
+		// Verify index entries - should have only 2 unique entries (pending, completed)
+		const entries = await getIndexEntries(dbId);
 
-		let allEvents: any[] = [];
-		indexEvents.forEach((job: any) => {
-			allEvents = allEvents.concat(job.events);
-		});
+		expect(entries.length).toBe(2);
 
-		// Each separate INSERT statement produces deduplicated events for that statement
-		// So we should have:
-		// - 1 'pending' event from INSERT 1 (1 row with pending)
-		// - 1 'pending' event from INSERT 2 (1 row with pending)
-		// - 1 'pending' event from INSERT 3 (1 row with pending)
-		// - 1 'completed' event from INSERT 4 (1 row with completed)
-		// Total: 3 pending + 1 completed
-		// (The queue layer will aggregate these multiple jobs for batching)
-		const pendingEvents = allEvents.filter((e: any) => e.key_value === 'pending');
-		const completedEvents = allEvents.filter((e: any) => e.key_value === 'completed');
-
-		// Each INSERT produces one event per unique (index, value, shard) tuple
-		expect(pendingEvents.length).toBe(3); // 3 separate INSERTs with pending
-		expect(completedEvents.length).toBe(1); // 1 INSERT with completed
-
-		// All should be 'add' operations
-		allEvents.forEach((event: any) => {
-			expect(event.operation).toBe('add');
-		});
+		const keyValues = entries.map(e => e.key_value);
+		expect(keyValues).toContain('pending');
+		expect(keyValues).toContain('completed');
 	});
 
 	it('should handle NULL values correctly (not index them)', async () => {
@@ -174,24 +158,16 @@ describe('INSERT with Index Maintenance', () => {
 		await sql`INSERT INTO records (id, email) VALUES (3, ${'user3@example.com'})`;
 		await sql`INSERT INTO records (id, email) VALUES (4, ${null})`;
 
-		// Collect maintain_index_events
-		const indexEvents = capturedQueueMessages.filter((msg: any) => msg.type === 'maintain_index_events');
+		// Verify index entries - should only have entries for non-NULL values
+		const entries = await getIndexEntries(dbId);
 
-		let allEvents: any[] = [];
-		indexEvents.forEach((job: any) => {
-			allEvents = allEvents.concat(job.events);
-		});
+		expect(entries.length).toBe(2);
 
-		// Should have exactly 2 events (for user1 and user3, not for NULLs)
-		expect(allEvents.length).toBeLessThanOrEqual(4); // At most 2 rows * 2 shards
-		expect(allEvents.length).toBeGreaterThanOrEqual(2); // At least 2 non-NULL rows
-
-		// Verify no NULL values in events
-		const keyValues = allEvents.map((e: any) => e.key_value);
-		expect(keyValues).not.toContain(null);
-		expect(keyValues).not.toContain('null');
+		const keyValues = entries.map(e => e.key_value);
 		expect(keyValues).toContain('user1@example.com');
 		expect(keyValues).toContain('user3@example.com');
+		expect(keyValues).not.toContain(null);
+		expect(keyValues).not.toContain('null');
 	});
 
 	it('should handle multiple indexes on same table', async () => {
@@ -216,34 +192,24 @@ describe('INSERT with Index Maintenance', () => {
 		await sql`INSERT INTO users (id, email, username) VALUES (1, ${'alice@example.com'}, ${'alice'})`;
 		await sql`INSERT INTO users (id, email, username) VALUES (2, ${'bob@example.com'}, ${'bob'})`;
 
-		// Collect maintain_index_events
-		const indexEvents = capturedQueueMessages.filter((msg: any) => msg.type === 'maintain_index_events');
+		// Verify index entries for both indexes
+		const entries = await getIndexEntries(dbId);
 
-		let allEvents: any[] = [];
-		indexEvents.forEach((job: any) => {
-			allEvents = allEvents.concat(job.events);
-		});
+		// Should have 4 entries total (2 emails + 2 usernames)
+		expect(entries.length).toBe(4);
 
-		// Should have events for both indexes
-		const emailEvents = allEvents.filter((e: any) => e.index_name === 'idx_email');
-		const usernameEvents = allEvents.filter((e: any) => e.index_name === 'idx_username');
+		const emailEntries = entries.filter(e => e.index_name === 'idx_email');
+		const usernameEntries = entries.filter(e => e.index_name === 'idx_username');
 
-		// At least 2 events per index (one per row)
-		expect(emailEvents.length).toBeGreaterThanOrEqual(2);
-		expect(usernameEvents.length).toBeGreaterThanOrEqual(2);
+		expect(emailEntries.length).toBe(2);
+		expect(usernameEntries.length).toBe(2);
 
-		// Verify values
-		const emailValues = emailEvents.map((e: any) => e.key_value);
-		const usernameValues = usernameEvents.map((e: any) => e.key_value);
+		const emailValues = emailEntries.map(e => e.key_value);
+		const usernameValues = usernameEntries.map(e => e.key_value);
 
 		expect(emailValues).toContain('alice@example.com');
 		expect(emailValues).toContain('bob@example.com');
 		expect(usernameValues).toContain('alice');
 		expect(usernameValues).toContain('bob');
-
-		// All should be 'add' operations
-		allEvents.forEach((event: any) => {
-			expect(event.operation).toBe('add');
-		});
 	});
 });

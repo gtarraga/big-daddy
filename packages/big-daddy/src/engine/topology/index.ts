@@ -241,7 +241,10 @@ export class Topology extends DurableObject<Env> {
 	 * Add a shard ID to an index entry
 	 */
 	async addShardToIndexEntry(indexName: string, keyValue: string, shardId: number): Promise<void> {
-		this.ensureCreated();
+		// Skip if topology not created
+		if (!this.isCreated()) {
+			return;
+		}
 		return this.virtualIndexes.addShardToIndexEntry(indexName, keyValue, shardId);
 	}
 
@@ -249,8 +252,42 @@ export class Topology extends DurableObject<Env> {
 	 * Remove a shard ID from an index entry
 	 */
 	async removeShardFromIndexEntry(indexName: string, keyValue: string, shardId: number): Promise<void> {
-		this.ensureCreated();
+		// Skip if topology not created
+		if (!this.isCreated()) {
+			return;
+		}
 		return this.virtualIndexes.removeShardFromIndexEntry(indexName, keyValue, shardId);
+	}
+
+	/**
+	 * Maintain indexes for DELETE operation (synchronous)
+	 */
+	async maintainIndexesForDelete(
+		rows: Record<string, any>[],
+		indexes: Array<{ index_name: string; columns: string }>,
+		shardId: number
+	): Promise<void> {
+		// Skip if topology not created or no indexes
+		if (!this.isCreated() || indexes.length === 0) {
+			return;
+		}
+		return this.virtualIndexes.maintainIndexesForDelete(rows, indexes, shardId);
+	}
+
+	/**
+	 * Maintain indexes for UPDATE operation (synchronous)
+	 */
+	async maintainIndexesForUpdate(
+		oldRows: Record<string, any>[],
+		newRows: Record<string, any>[],
+		indexes: Array<{ index_name: string; columns: string }>,
+		shardId: number
+	): Promise<void> {
+		// Skip if topology not created or no indexes
+		if (!this.isCreated() || indexes.length === 0) {
+			return;
+		}
+		return this.virtualIndexes.maintainIndexesForUpdate(oldRows, newRows, indexes, shardId);
 	}
 
 	/**

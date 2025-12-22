@@ -8,10 +8,7 @@ import {
 	invalidateCacheForWrite,
 	getCachedQueryPlanData,
 } from '../utils/write';
-import {
-	prepareIndexMaintenanceQueries,
-	dispatchIndexSyncingFromQueryResults,
-} from '../utils/index-maintenance';
+import { prepareIndexMaintenanceQueries } from '../utils/index-maintenance';
 
 
 /**
@@ -85,27 +82,22 @@ export async function handleDelete(
 
 	logger.info`Shard execution completed for DELETE ${{shardsQueried: shardsToQuery.length}}`;
 
-	// STEP 5: Dispatch index maintenance if needed
+	// STEP 5: Synchronous index maintenance
 	if (planData.virtualIndexes.length > 0) {
-		await dispatchIndexSyncingFromQueryResults(
-			'DELETE',
-			execResult.results as QueryResult[][],
-			tableName,
-			shardsToQuery,
-			planData.virtualIndexes,
-			context,
-			(results) => {
-				// Extract oldRows from SELECT results (first in batch)
-				const oldRows = new Map<number, Record<string, any>[]>();
-				const resultsArray = results as QueryResult[][];
-				for (let i = 0; i < shardsToQuery.length; i++) {
-					const [selectResult] = resultsArray[i]!;
-					const rows = (selectResult as any).rows || [];
-					oldRows.set(shardsToQuery[i].shard_id, rows);
-				}
-				return { oldRows };
-			},
-		);
+		const { databaseId, topology } = context;
+		const topologyId = topology.idFromName(databaseId);
+		const topologyStub = topology.get(topologyId);
+
+		const resultsArray = execResult.results as QueryResult[][];
+		for (let i = 0; i < shardsToQuery.length; i++) {
+			const [selectResult] = resultsArray[i]!;
+			const rows = (selectResult as any).rows || [];
+			const shardId = shardsToQuery[i]!.shard_id;
+
+			if (rows.length > 0) {
+				await topologyStub.maintainIndexesForDelete(rows, planData.virtualIndexes, shardId);
+			}
+		}
 	}
 
 	// STEP 6: Invalidate cache entries for write operation

@@ -1094,9 +1094,8 @@ describe('Topology Durable Object', () => {
 				const statement = parse('INSERT INTO users (id, name, email) VALUES (?, ?, ?)');
 				const planData = await stub.getQueryPlanData('users', statement, [123, 'Alice', 'alice@example.com']);
 
-				expect(planData.shardsToQuery).toHaveLength(1); // Single shard
-				expect(planData.shardsToQuery[0].shard_id).toBeGreaterThanOrEqual(0);
-				expect(planData.shardsToQuery[0].shard_id).toBeLessThan(3);
+				// INSERT returns all shards - the INSERT handler distributes rows to correct shards
+				expect(planData.shardsToQuery).toHaveLength(3);
 			});
 
 			it('should handle INSERT with different shard key values', async () => {
@@ -1126,16 +1125,9 @@ describe('Topology Durable Object', () => {
 				const statement2 = parse('INSERT INTO users (id, name) VALUES (?, ?)');
 				const planData2 = await stub.getQueryPlanData('users', statement2, [200, 'User200']);
 
-				// Both should return single shard
-				expect(planData1.shardsToQuery).toHaveLength(1);
-				expect(planData2.shardsToQuery).toHaveLength(1);
-
-				// Shards might be the same or different depending on hash
-				// Just verify they're valid shard IDs
-				expect(planData1.shardsToQuery[0].shard_id).toBeGreaterThanOrEqual(0);
-				expect(planData1.shardsToQuery[0].shard_id).toBeLessThan(4);
-				expect(planData2.shardsToQuery[0].shard_id).toBeGreaterThanOrEqual(0);
-				expect(planData2.shardsToQuery[0].shard_id).toBeLessThan(4);
+				// INSERT returns all shards - the INSERT handler distributes rows to correct shards
+				expect(planData1.shardsToQuery).toHaveLength(4);
+				expect(planData2.shardsToQuery).toHaveLength(4);
 			});
 		});
 

@@ -24,12 +24,31 @@ export function injectVirtualShard(
 ): { modifiedStatement: Statement; modifiedParams: any[] } {
 	try {
 		if (statement.type === 'InsertStatement') {
-			// For INSERT, append shardId once per row and inject placeholders accordingly
-			const rowCount = (statement as InsertStatement).values?.length || 1;
-			const shardIdParams = Array(rowCount).fill(shardId);
+			// For INSERT, interleave shardId for each row
+			// SQL will be: VALUES (col1, col2, col3, _virtualShard), (col1, col2, col3, _virtualShard), ...
+			// So params must be: [val1, val2, val3, shardId, val4, val5, val6, shardId, ...]
+			const insertStmt = statement as InsertStatement;
+			const rows = insertStmt.values || [];
+
+			// Count actual placeholders per row (not just columns - some may be literals)
+			const interleavedParams: SqlParam[] = [];
+			let paramIndex = 0;
+
+			for (const row of rows) {
+				// Add params for placeholders in this row (in order)
+				for (const expr of row) {
+					if (expr && typeof expr === 'object' && 'type' in expr && expr.type === 'Placeholder') {
+						interleavedParams.push(params[paramIndex]);
+						paramIndex++;
+					}
+				}
+				// Add shard ID for this row
+				interleavedParams.push(shardId);
+			}
+
 			return {
-				modifiedStatement: insertColumn(statement, params, shardId),
-				modifiedParams: [...params, ...shardIdParams],
+				modifiedStatement: insertColumn(insertStmt, params, shardId),
+				modifiedParams: interleavedParams,
 			};
 		}
 		const modifiedParams = [...params, shardId];

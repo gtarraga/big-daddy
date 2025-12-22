@@ -499,6 +499,109 @@ export class VirtualIndexOperations {
 	}
 
 	/**
+	 * Maintain indexes for DELETE operation
+	 * Called synchronously after DELETE executes to remove index entries
+	 *
+	 * @param rows - The rows that were deleted (captured before DELETE)
+	 * @param indexes - Virtual indexes on this table
+	 * @param shardId - The shard where rows were deleted
+	 */
+	async maintainIndexesForDelete(
+		rows: Record<string, any>[],
+		indexes: Array<{ index_name: string; columns: string }>,
+		shardId: number
+	): Promise<void> {
+		for (const index of indexes) {
+			const indexColumns = JSON.parse(index.columns) as string[];
+
+			for (const row of rows) {
+				const keyValue = this.buildKeyValueFromRow(row, indexColumns);
+				if (keyValue === null) continue;
+
+				await this.removeShardFromIndexEntry(index.index_name, keyValue, shardId);
+			}
+		}
+	}
+
+	/**
+	 * Maintain indexes for UPDATE operation
+	 * Called synchronously after UPDATE executes to update index entries
+	 *
+	 * Compares old vs new values and:
+	 * - Removes entries for values that changed (old value no longer in this shard)
+	 * - Adds entries for new values
+	 *
+	 * @param oldRows - Rows before UPDATE
+	 * @param newRows - Rows after UPDATE
+	 * @param indexes - Virtual indexes on this table
+	 * @param shardId - The shard where rows were updated
+	 */
+	async maintainIndexesForUpdate(
+		oldRows: Record<string, any>[],
+		newRows: Record<string, any>[],
+		indexes: Array<{ index_name: string; columns: string }>,
+		shardId: number
+	): Promise<void> {
+		for (const index of indexes) {
+			const indexColumns = JSON.parse(index.columns) as string[];
+
+			// Build sets of old and new key values
+			const oldKeyValues = new Set<string>();
+			const newKeyValues = new Set<string>();
+
+			for (const row of oldRows) {
+				const keyValue = this.buildKeyValueFromRow(row, indexColumns);
+				if (keyValue !== null) {
+					oldKeyValues.add(keyValue);
+				}
+			}
+
+			for (const row of newRows) {
+				const keyValue = this.buildKeyValueFromRow(row, indexColumns);
+				if (keyValue !== null) {
+					newKeyValues.add(keyValue);
+				}
+			}
+
+			// Remove entries for values that are no longer present
+			for (const keyValue of oldKeyValues) {
+				if (!newKeyValues.has(keyValue)) {
+					await this.removeShardFromIndexEntry(index.index_name, keyValue, shardId);
+				}
+			}
+
+			// Add entries for new values
+			for (const keyValue of newKeyValues) {
+				if (!oldKeyValues.has(keyValue)) {
+					await this.addShardToIndexEntry(index.index_name, keyValue, shardId);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Build a key value for indexed column(s) from a row
+	 * Returns null if any indexed column is NULL (NULL values are not indexed)
+	 * Private helper shared by maintainIndexesForDelete/Update
+	 */
+	private buildKeyValueFromRow(row: Record<string, any>, columns: string[]): string | null {
+		if (columns.length === 1) {
+			const value = row[columns[0]!];
+			if (value === null || value === undefined) {
+				return null;
+			}
+			return String(value);
+		} else {
+			// Composite index - build key from all column values
+			const values = columns.map((col) => row[col]);
+			if (values.some((v) => v === null || v === undefined)) {
+				return null;
+			}
+			return JSON.stringify(values);
+		}
+	}
+
+	/**
 	 * Extract column-value pairs from AND conditions
 	 * Private helper
 	 */

@@ -60,7 +60,7 @@ function prepareShardQueries(
 	const queries = statementsWithParams.map(({ statement, params }, idx) => {
 		const { modifiedStatement, modifiedParams } = injectVirtualShard(statement, params, shard.shard_id);
 		const sql = generate(modifiedStatement);
-		return {
+				return {
 			query: sql,
 			params: modifiedParams,
 		};

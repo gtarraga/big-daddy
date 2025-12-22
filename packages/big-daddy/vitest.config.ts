@@ -5,7 +5,7 @@ export default defineWorkersConfig({
 		poolOptions: {
 			workers: {
 				wrangler: {
-					configPath: './wrangler.jsonc',
+					configPath: './wrangler.test.jsonc', // Use test config without remote AI binding
 				},
 				isolatedStorage: false,
 				singleWorker: true, // Required for queue consumer testing - prevents ERR_MULTIPLE_CONSUMERS

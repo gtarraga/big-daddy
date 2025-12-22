@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createConnection } from '../../src/index';
 import { queueHandler } from '../../src/queue-consumer';
@@ -18,13 +18,10 @@ import type { ReshardTableJob, IndexBuildJob, MessageBatch } from '../../src/eng
  */
 
 // Capture queue messages for manual processing
-// We intercept and DON'T call the original to prevent async background processing
 let capturedQueueMessages: any[] = [];
 
-env.INDEX_QUEUE.send = async (message: any) => {
-	capturedQueueMessages.push(message);
-	// Don't call original - we'll process manually to avoid async race conditions
-};
+// Save original queue.send to restore later
+const originalQueueSend = env.INDEX_QUEUE.send.bind(env.INDEX_QUEUE);
 
 /**
  * Process all pending build_index jobs from the captured queue
@@ -70,6 +67,17 @@ async function processReshardingJobs(): Promise<void> {
 describe('Resharding Integration Tests', () => {
 	beforeEach(() => {
 		capturedQueueMessages = [];
+		// Intercept queue.send to capture calls WITHOUT calling original
+		// This prevents async background processing that breaks test isolation
+		env.INDEX_QUEUE.send = async (message: any) => {
+			capturedQueueMessages.push(message);
+			// Don't call original - we'll process manually to avoid async race conditions
+		};
+	});
+
+	afterEach(() => {
+		// Restore original queue.send to prevent hanging
+		env.INDEX_QUEUE.send = originalQueueSend;
 	});
 
 	it('should reshard users table from 1 to 5 shards on 3 nodes and verify data integrity', async () => {
@@ -251,9 +259,7 @@ describe('Resharding Integration Tests', () => {
 		expect(finalCount.rows[0].count).toBe(100); // 99 + 1 new
 	});
 
-	// TODO: Virtual indexes need to be rebuilt after resharding - this is a known limitation
-	// The index entries still point to old shard IDs after resharding
-	it.skip('should handle resharding with indexes and maintain query optimization', async () => {
+	it('should handle resharding with indexes and maintain query optimization', async () => {
 		const dbId = 'test-reshard-integration-with-index';
 		const sql = await createConnection(dbId, { nodes: 3 }, env);
 
@@ -292,8 +298,12 @@ describe('Resharding Integration Tests', () => {
 		await sql`PRAGMA reshardTable('products', 5)`;
 		await processReshardingJobs();
 
+		// Create a new connection to get a fresh cache after resharding
+		// The old connection's cache still has stale shard information
+		const sqlAfterReshard = await createConnection(dbId, { nodes: 3 }, env);
+
 		// Verify index-based query after resharding
-		const electronicsAfter = await sql`SELECT * FROM products WHERE category = ${'Electronics'}`;
+		const electronicsAfter = await sqlAfterReshard`SELECT * FROM products WHERE category = ${'Electronics'}`;
 		expect(electronicsAfter.rows.length).toBe(electronicsCountBefore);
 
 		// Verify aggregation by category

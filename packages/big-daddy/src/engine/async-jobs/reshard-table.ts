@@ -18,6 +18,27 @@ import type { Storage, StorageResults } from '../storage';
 import type { Topology } from '../topology/index';
 import { hashToShard } from '../utils/sharding';
 
+/**
+ * Build a key value for indexed column(s) from a row
+ * Returns null if any indexed column is NULL (NULL values are not indexed)
+ */
+function buildIndexKeyValue(row: Record<string, any>, columns: string[]): string | null {
+	if (columns.length === 1) {
+		const value = row[columns[0]!];
+		if (value === null || value === undefined) {
+			return null;
+		}
+		return String(value);
+	} else {
+		// Composite index - build key from all column values
+		const values = columns.map((col) => row[col]);
+		if (values.some((v) => v === null || v === undefined)) {
+			return null;
+		}
+		return JSON.stringify(values);
+	}
+}
+
 export async function processReshardTableJob(job: ReshardTableJob, env: Env, correlationId?: string): Promise<void> {
 	const source = 'QueueConsumer';
 	const tableName = job.table_name;
@@ -329,6 +350,22 @@ async function copyShardData(
 			}
 		}
 
+		// Get virtual indexes for this table (for index maintenance during copy)
+		const tableIndexes = topology.virtual_indexes
+			.filter(idx => idx.table_name === tableName && idx.status === 'ready')
+			.map(idx => ({ index_name: idx.index_name, columns: idx.columns }));
+
+		if (tableIndexes.length > 0) {
+			logger.info`Phase 3B: Will update ${tableIndexes.length} indexes during copy ${{source}} ${{indexes: tableIndexes.map(i => i.index_name)}}`;
+		}
+
+		// Track index key values that need to be removed from source shard after copy completes
+		// We can't remove during copy because multiple rows may share the same index key value
+		const indexKeysToRemoveFromSource = new Map<string, Set<string>>(); // index_name -> Set<key_value>
+		for (const index of tableIndexes) {
+			indexKeysToRemoveFromSource.set(index.index_name, new Set());
+		}
+
 		// Insert rows into target shards based on shard key distribution
 		// Each row goes to exactly one target shard determined by hash(shardKeyValue) % targetShardCount
 		const shardDistribution = new Map<number, number>();
@@ -389,11 +426,39 @@ async function copyShardData(
 				rowsCopied++;
 				const currentCount = shardDistribution.get(targetShardId) || 0;
 				shardDistribution.set(targetShardId, currentCount + 1);
+
+				// Update virtual indexes: add to target shard now, track for removal from source later
+				// We can't remove from source during copy because multiple rows may share the same key value
+				if (tableIndexes.length > 0) {
+					for (const index of tableIndexes) {
+						const indexColumns = JSON.parse(index.columns) as string[];
+						const keyValue = buildIndexKeyValue(row, indexColumns);
+						if (keyValue !== null) {
+							// Add to target shard's index entry
+							await topologyStub.addShardToIndexEntry(index.index_name, keyValue, targetShardId);
+							// Track for removal from source after all rows are copied
+							indexKeysToRemoveFromSource.get(index.index_name)!.add(keyValue);
+						}
+					}
+				}
 			} catch (error) {
 				const copyErrorMsg = error instanceof Error ? error.message : String(error);
 				logger.error`Failed to copy row to target shard ${{source}} ${{shardKeyValue}} ${{targetShardId}} ${{error: copyErrorMsg}}`;
 				throw error;
 			}
+		}
+
+		// Now that all rows are copied, remove index entries from source shard
+		// This is safe because all data has been migrated to target shards
+		if (tableIndexes.length > 0) {
+			for (const index of tableIndexes) {
+				const keysToRemove = indexKeysToRemoveFromSource.get(index.index_name)!;
+				for (const keyValue of keysToRemove) {
+					await topologyStub.removeShardFromIndexEntry(index.index_name, keyValue, sourceShardId);
+				}
+			}
+			const totalKeysRemoved = Array.from(indexKeysToRemoveFromSource.values()).reduce((sum, set) => sum + set.size, 0);
+			logger.info`Phase 3B: Index entries removed from source shard ${{source}} ${{indexCount: tableIndexes.length}} ${{keysRemoved: totalKeysRemoved}}`;
 		}
 
 		// Log final distribution

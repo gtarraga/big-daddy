@@ -64,12 +64,7 @@ export class Storage extends DurableObject<Env> {
 				const queryStartTime = Date.now();
 				const result = this.ctx.storage.sql.exec(batch.query, ...(batch.params ?? []));
 				const rows = result.toArray() as unknown as Record<string, any>[];
-				let rowsAffected = result.rowsWritten ?? 0;
-				if (batch.query.trim().toUpperCase().startsWith('INSERT') ||
-				    batch.query.trim().toUpperCase().startsWith('UPDATE') ||
-				    batch.query.trim().toUpperCase().startsWith('DELETE')) {
-					rowsAffected = Math.max(1, Math.floor(rowsAffected / 2));
-				}
+				const rowsAffected = result.rowsWritten ?? 0;
 
 				const rowCount = rows.length;
 				const duration = Date.now() - queryStartTime;

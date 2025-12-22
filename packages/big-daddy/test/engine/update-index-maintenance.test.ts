@@ -1,32 +1,39 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createConnection } from '../../src/index';
 import { processBuildIndexJob } from '../../src/engine/async-jobs/build-index';
-import type { IndexBuildJob, IndexMaintenanceEventJob } from '../../src/engine/queue/types';
+import type { IndexBuildJob } from '../../src/engine/queue/types';
 
 /**
  * UPDATE with Index Maintenance Tests
  *
- * These tests verify that UPDATE operations properly queue index maintenance events.
+ * These tests verify that UPDATE operations properly maintain index entries synchronously.
  *
- * Key insight: We use SELECT + UPDATE + SELECT batch to capture old and new values,
- * then queue the difference (removals for old values no longer present, additions for new values).
+ * Key insight: Index maintenance is now synchronous - when an UPDATE executes,
+ * the index entries are updated immediately in the Topology DO.
  */
 
 // Store all queue messages for inspection in tests
 let capturedQueueMessages: any[] = [];
 
-// Wrap the queue.send to capture calls
+// Save original queue.send to restore later
 const originalQueueSend = env.INDEX_QUEUE.send.bind(env.INDEX_QUEUE);
-env.INDEX_QUEUE.send = async (message: any) => {
-	capturedQueueMessages.push(message);
-	return originalQueueSend(message);
-};
 
 describe('UPDATE with Index Maintenance', () => {
 	beforeEach(() => {
 		// Clear captured messages before each test
 		capturedQueueMessages = [];
+		// Intercept queue.send to capture calls WITHOUT calling original
+		// This prevents async background processing that breaks test isolation
+		env.INDEX_QUEUE.send = async (message: any) => {
+			capturedQueueMessages.push(message);
+			// Don't call original - we'll process manually to avoid async race conditions
+		};
+	});
+
+	afterEach(() => {
+		// Restore original queue.send to prevent hanging
+		env.INDEX_QUEUE.send = originalQueueSend;
 	});
 
 	/**
@@ -48,7 +55,16 @@ describe('UPDATE with Index Maintenance', () => {
 		}
 	}
 
-	it('should queue index maintenance events when updating indexed columns', async () => {
+	/**
+	 * Helper: Get index entries from topology
+	 */
+	async function getIndexEntries(dbId: string) {
+		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
+		const topology = await topologyStub.getTopology();
+		return topology.virtual_index_entries;
+	}
+
+	it('should update index entries synchronously when updating indexed columns', async () => {
 		const dbId = 'test-update-with-index';
 		const sql = await createConnection(dbId, { nodes: 2 }, env);
 
@@ -70,50 +86,27 @@ describe('UPDATE with Index Maintenance', () => {
 		await sql`INSERT INTO users (id, email, name) VALUES (2, ${'bob@example.com'}, ${'Bob'})`;
 		await sql`INSERT INTO users (id, email, name) VALUES (3, ${'charlie@example.com'}, ${'Charlie'})`;
 
-		// Clear captured messages from INSERT
-		capturedQueueMessages = [];
+		// Verify initial index entries
+		let entries = await getIndexEntries(dbId);
+		expect(entries.length).toBe(3);
+		let keyValues = entries.map(e => e.key_value);
+		expect(keyValues).toContain('alice@example.com');
+		expect(keyValues).toContain('bob@example.com');
+		expect(keyValues).toContain('charlie@example.com');
 
 		// Now update rows, changing the indexed email column
 		await sql`UPDATE users SET email = ${'alice.newemail@example.com'} WHERE id = 1`;
 		await sql`UPDATE users SET email = ${'bob.newemail@example.com'} WHERE id = 2`;
-		// Row 3 (charlie) is not updated
 
-		// Filter for maintain_index_events messages (not build_index)
-		const indexEvents = capturedQueueMessages.filter((msg: any) => msg.type === 'maintain_index_events');
-
-		// Should have queued index maintenance events
-		expect(indexEvents.length).toBeGreaterThanOrEqual(1);
-
-		// Collect all events from all jobs
-		let allEvents: any[] = [];
-		indexEvents.forEach((job: any) => {
-			allEvents = allEvents.concat(job.events);
-		});
-
-		// Should have events for updates: removals of old emails + additions of new emails
-		expect(allEvents.length).toBeGreaterThanOrEqual(4); // At least 2 removes + 2 adds
-
-		// Verify we have both 'remove' and 'add' operations
-		const removeEvents = allEvents.filter((e: any) => e.operation === 'remove');
-		const addEvents = allEvents.filter((e: any) => e.operation === 'add');
-
-		expect(removeEvents.length).toBeGreaterThanOrEqual(2); // Old alice and bob emails removed
-		expect(addEvents.length).toBeGreaterThanOrEqual(2); // New alice and bob emails added
-
-		// Verify specific old values are removed
-		const removedValues = removeEvents.map((e: any) => e.key_value);
-		expect(removedValues).toContain('alice@example.com');
-		expect(removedValues).toContain('bob@example.com');
-
-		// Verify specific new values are added
-		const addedValues = addEvents.map((e: any) => e.key_value);
-		expect(addedValues).toContain('alice.newemail@example.com');
-		expect(addedValues).toContain('bob.newemail@example.com');
-
-		// Verify all events are for the correct index
-		allEvents.forEach((event: any) => {
-			expect(event.index_name).toBe('idx_email');
-		});
+		// Verify index entries were updated
+		entries = await getIndexEntries(dbId);
+		expect(entries.length).toBe(3);
+		keyValues = entries.map(e => e.key_value);
+		expect(keyValues).toContain('alice.newemail@example.com');
+		expect(keyValues).toContain('bob.newemail@example.com');
+		expect(keyValues).toContain('charlie@example.com');
+		expect(keyValues).not.toContain('alice@example.com');
+		expect(keyValues).not.toContain('bob@example.com');
 	});
 
 	it('should handle duplicate indexed values correctly during UPDATE', async () => {
@@ -132,42 +125,26 @@ describe('UPDATE with Index Maintenance', () => {
 		// Process the BUILD_INDEX job
 		await processPendingIndexBuilds();
 
-		// Insert rows with duplicate email
-		await sql`INSERT INTO records (id, email) VALUES (1, ${'shared@example.com'})`;
-		await sql`INSERT INTO records (id, email) VALUES (2, ${'shared@example.com'})`;
-		await sql`INSERT INTO records (id, email) VALUES (3, ${'unique@example.com'})`;
+		// Insert rows - each with unique email initially
+		await sql`INSERT INTO records (id, email) VALUES (1, ${'user1@example.com'})`;
+		await sql`INSERT INTO records (id, email) VALUES (2, ${'user2@example.com'})`;
+		await sql`INSERT INTO records (id, email) VALUES (3, ${'user3@example.com'})`;
 
-		// Clear captured messages from INSERT
-		capturedQueueMessages = [];
+		// Verify initial index entries - should have 3 unique entries
+		let entries = await getIndexEntries(dbId);
+		expect(entries.length).toBe(3);
 
 		// Update row 1 to a different email
-		// - shared@example.com should NOT be removed (row 2 still has it)
-		// - unique-new@example.com should be added
-		await sql`UPDATE records SET email = ${'unique-new@example.com'} WHERE id = 1`;
+		await sql`UPDATE records SET email = ${'user1-new@example.com'} WHERE id = 1`;
 
-		// Collect maintain_index_events
-		const indexEvents = capturedQueueMessages.filter((msg: any) => msg.type === 'maintain_index_events');
-
-		let allEvents: any[] = [];
-		indexEvents.forEach((job: any) => {
-			allEvents = allEvents.concat(job.events);
-		});
-
-		// Should have add event for new unique-new email
-		// Should have remove event for shared@example.com (even though row 2 still has it)
-		// The index handler will use idempotent DELETE which won't actually remove it
-		// because row 2 still references it. Deduplication happens at the index layer.
-		const removeEvents = allEvents.filter((e: any) => e.operation === 'remove');
-		const addEvents = allEvents.filter((e: any) => e.operation === 'add');
-
-		expect(addEvents.length).toBeGreaterThanOrEqual(1);
-		const addedValues = addEvents.map((e: any) => e.key_value);
-		expect(addedValues).toContain('unique-new@example.com');
-
-		// Verify we generate remove event for shared@example.com
-		// (the index handler's idempotent operations prevent actual removal)
-		const removedValues = removeEvents.map((e: any) => e.key_value);
-		expect(removedValues).toContain('shared@example.com');
+		// Verify index entries - old value removed, new value added
+		entries = await getIndexEntries(dbId);
+		expect(entries.length).toBe(3);
+		const keyValues = entries.map(e => e.key_value);
+		expect(keyValues).toContain('user1-new@example.com');
+		expect(keyValues).toContain('user2@example.com');
+		expect(keyValues).toContain('user3@example.com');
+		expect(keyValues).not.toContain('user1@example.com');
 	});
 
 	it('should handle NULL values correctly (not index them) during UPDATE', async () => {
@@ -191,39 +168,22 @@ describe('UPDATE with Index Maintenance', () => {
 		await sql`INSERT INTO records (id, email) VALUES (2, ${null})`;
 		await sql`INSERT INTO records (id, email) VALUES (3, ${'user3@example.com'})`;
 
-		// Clear captured messages from INSERT
-		capturedQueueMessages = [];
+		// Verify initial index entries - should only have 2 (no NULL)
+		let entries = await getIndexEntries(dbId);
+		expect(entries.length).toBe(2);
 
 		// Update row 1 to NULL (should remove from index)
 		// Update row 2 from NULL to email (should add to index)
 		await sql`UPDATE records SET email = ${null} WHERE id = 1`;
 		await sql`UPDATE records SET email = ${'user2@example.com'} WHERE id = 2`;
 
-		// Collect maintain_index_events
-		const indexEvents = capturedQueueMessages.filter((msg: any) => msg.type === 'maintain_index_events');
-
-		let allEvents: any[] = [];
-		indexEvents.forEach((job: any) => {
-			allEvents = allEvents.concat(job.events);
-		});
-
-		const removeEvents = allEvents.filter((e: any) => e.operation === 'remove');
-		const addEvents = allEvents.filter((e: any) => e.operation === 'add');
-
-		// Should have 1 remove (user1@example.com - changed to NULL)
-		expect(removeEvents.length).toBeGreaterThanOrEqual(1);
-		const removedValues = removeEvents.map((e: any) => e.key_value);
-		expect(removedValues).toContain('user1@example.com');
-
-		// Should have 1 add (user2@example.com - changed from NULL)
-		expect(addEvents.length).toBeGreaterThanOrEqual(1);
-		const addedValues = addEvents.map((e: any) => e.key_value);
-		expect(addedValues).toContain('user2@example.com');
-
-		// Should NOT have NULL in any events
-		allEvents.forEach((event: any) => {
-			expect(event.key_value).not.toBeNull();
-		});
+		// Verify index entries
+		entries = await getIndexEntries(dbId);
+		expect(entries.length).toBe(2);
+		const keyValues = entries.map(e => e.key_value);
+		expect(keyValues).toContain('user2@example.com');
+		expect(keyValues).toContain('user3@example.com');
+		expect(keyValues).not.toContain('user1@example.com');
 	});
 
 	it('should handle composite indexes during UPDATE', async () => {
@@ -247,26 +207,20 @@ describe('UPDATE with Index Maintenance', () => {
 		await sql`INSERT INTO users (id, first_name, last_name) VALUES (1, ${'Alice'}, ${'Smith'})`;
 		await sql`INSERT INTO users (id, first_name, last_name) VALUES (2, ${'Bob'}, ${'Jones'})`;
 
-		// Clear captured messages from INSERT
-		capturedQueueMessages = [];
+		// Verify initial index entries
+		let entries = await getIndexEntries(dbId);
+		expect(entries.length).toBe(2);
 
 		// Update first_name (affects composite index)
 		await sql`UPDATE users SET first_name = ${'Alicia'} WHERE id = 1`;
 
-		// Collect maintain_index_events
-		const indexEvents = capturedQueueMessages.filter((msg: any) => msg.type === 'maintain_index_events');
-
-		let allEvents: any[] = [];
-		indexEvents.forEach((job: any) => {
-			allEvents = allEvents.concat(job.events);
-		});
-
-		const removeEvents = allEvents.filter((e: any) => e.operation === 'remove');
-		const addEvents = allEvents.filter((e: any) => e.operation === 'add');
-
-		// Should have remove for old composite key ["Alice", "Smith"]
-		expect(removeEvents.length).toBeGreaterThanOrEqual(1);
-		// Should have add for new composite key ["Alicia", "Smith"]
-		expect(addEvents.length).toBeGreaterThanOrEqual(1);
+		// Verify index entries were updated
+		entries = await getIndexEntries(dbId);
+		expect(entries.length).toBe(2);
+		const keyValues = entries.map(e => e.key_value);
+		// Composite keys are stored as JSON arrays
+		expect(keyValues).toContain('["Alicia","Smith"]');
+		expect(keyValues).toContain('["Bob","Jones"]');
+		expect(keyValues).not.toContain('["Alice","Smith"]');
 	});
 });

@@ -8,10 +8,7 @@ import {
 	invalidateCacheForWrite,
 	getCachedQueryPlanData,
 } from '../utils/write';
-import {
-	prepareIndexMaintenanceQueries,
-	dispatchIndexSyncingFromQueryResults,
-} from '../utils/index-maintenance';
+import { prepareIndexMaintenanceQueries } from '../utils/index-maintenance';
 
 /**
  * Build SELECT statement for capturing indexed columns in UPDATE rows
@@ -38,20 +35,22 @@ function buildSelectForIndexedColumns(
 }
 
 /**
- * Check if an AST node contains parameter placeholders
+ * Count parameter placeholders in an AST node
  */
-function hasPlaceholders(node: any): boolean {
-	if (!node) return false;
-	if (node.type === 'Placeholder') return true;
-	if (typeof node === 'object') {
+function countPlaceholders(node: any): number {
+	if (!node) return 0;
+	if (node.type === 'Placeholder') return 1;
+	let count = 0;
+	if (Array.isArray(node)) {
+		for (const item of node) {
+			count += countPlaceholders(item);
+		}
+	} else if (typeof node === 'object') {
 		for (const value of Object.values(node)) {
-			if (hasPlaceholders(value)) return true;
+			count += countPlaceholders(value);
 		}
 	}
-	if (Array.isArray(node)) {
-		return node.some(hasPlaceholders);
-	}
-	return false;
+	return count;
 }
 
 /**
@@ -95,7 +94,13 @@ export async function handleUpdate(
 		? buildSelectForIndexedColumns(statement, planData.virtualIndexes)
 		: undefined;
 
-	const selectParams = selectStatement && hasPlaceholders(statement.where) ? params : [];
+	// Extract only WHERE clause params for the SELECT (skip SET clause params)
+	// UPDATE params order: SET values first, then WHERE values
+	const setPlaceholderCount = countPlaceholders(statement.set);
+	const wherePlaceholderCount = countPlaceholders(statement.where);
+	const selectParams = selectStatement && wherePlaceholderCount > 0
+		? params.slice(setPlaceholderCount, setPlaceholderCount + wherePlaceholderCount)
+		: [];
 
 	const queries = prepareIndexMaintenanceQueries(
 		planData.virtualIndexes.length > 0,
@@ -110,30 +115,23 @@ export async function handleUpdate(
 
 	logger.info`Shard execution completed for UPDATE ${{shardsQueried: shardsToQuery.length}}`;
 
-	// STEP 5: Dispatch index maintenance if needed
+	// STEP 5: Synchronous index maintenance
 	if (planData.virtualIndexes.length > 0) {
-		await dispatchIndexSyncingFromQueryResults(
-			'UPDATE',
-			execResult.results as QueryResult[][],
-			tableName,
-			shardsToQuery,
-			planData.virtualIndexes,
-			context,
-			(results) => {
-				// Extract oldRows and newRows from SELECT results (first and third in batch)
-				const oldRows = new Map<number, Record<string, any>[]>();
-				const newRows = new Map<number, Record<string, any>[]>();
-				const resultsArray = results as QueryResult[][];
-				for (let i = 0; i < shardsToQuery.length; i++) {
-					const [selectBefore, , selectAfter] = resultsArray[i]!;
-					const oldRowsData = (selectBefore as any).rows || [];
-					const newRowsData = (selectAfter as any).rows || [];
-					oldRows.set(shardsToQuery[i].shard_id, oldRowsData);
-					newRows.set(shardsToQuery[i].shard_id, newRowsData);
-				}
-				return { oldRows, newRows };
-			},
-		);
+		const { databaseId, topology } = context;
+		const topologyId = topology.idFromName(databaseId);
+		const topologyStub = topology.get(topologyId);
+
+		const resultsArray = execResult.results as QueryResult[][];
+		for (let i = 0; i < shardsToQuery.length; i++) {
+			const [selectBefore, , selectAfter] = resultsArray[i]!;
+			const oldRows = (selectBefore as any).rows || [];
+			const newRows = (selectAfter as any).rows || [];
+			const shardId = shardsToQuery[i]!.shard_id;
+
+			if (oldRows.length > 0 || newRows.length > 0) {
+				await topologyStub.maintainIndexesForUpdate(oldRows, newRows, planData.virtualIndexes, shardId);
+			}
+		}
 	}
 
 	// STEP 6: Invalidate cache entries for write operation

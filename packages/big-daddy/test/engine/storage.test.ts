@@ -18,8 +18,8 @@ describe('Storage Durable Object', () => {
 
 		// Verify the result
 		expect(result).toHaveProperty('rows');
-		expect(result).toHaveProperty('queryType', 'SELECT');
 		expect(Array.isArray((result as any).rows)).toBe(true);
+		expect((result as any).rows[0]).toEqual({ num: 1 });
 	});
 
 	it('should create a table and insert data', async () => {

@@ -81,17 +81,9 @@ export class AdministrationOperations {
 		const strategy = shardsToQuery.length === 1 ? 'single' : shardsToQuery.length === tableShards.length ? 'all' : 'subset';
 		logger.info`Shard targets determined ${{source}} ${{component}} ${{shardsSelected}} ${{totalShards}} ${{strategy}}`;
 
-		// For INSERT: Handle index maintenance NOW (before query executes)
-		// We know the target shard and have all the data we need
-		if (statement.type === 'InsertStatement' && virtual_indexes.length > 0) {
-			logger.debug`Maintaining indexes for INSERT ${{source}} ${{component}} ${{indexCount}}`;
-			await this.topology.maintainIndexesForInsert(
-				statement as InsertStatement,
-				virtual_indexes,
-				shardsToQuery[0]!,
-				params
-			);
-		}
+		// NOTE: For INSERT, index maintenance is handled in handleInsert() AFTER
+		// we know which shard each row is going to (based on shard key hash).
+		// We can't do it here because shardsToQuery[0] may not be the actual target shard.
 
 		const duration = Date.now() - startTime;
 		logger.debug`Query plan data completed ${{source}} ${{component}} ${{duration}}`;

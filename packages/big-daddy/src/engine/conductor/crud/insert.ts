@@ -10,7 +10,7 @@ import {
 	invalidateCacheForWrite,
 	getCachedQueryPlanData,
 } from '../utils/write';
-import { prepareIndexMaintenanceQueries, dispatchIndexSyncingFromQueryResults } from '../utils/index-maintenance';
+import { prepareIndexMaintenanceQueries } from '../utils/index-maintenance';
 
 /**
  * Group INSERT rows by target shard and create per-shard INSERT statements
@@ -63,7 +63,6 @@ function groupInsertByShards(
 	}
 
 	// Group each row by target shard, tracking which parameters belong to this row
-	const numParamsPerRow = columns.length; // Each column gets one parameter
 	values.forEach((valueList, rowIndex) => {
 		// Extract the shard key value from this row
 		const shardKeyExpr = valueList[shardKeyIndex];
@@ -143,70 +142,6 @@ function groupInsertByShards(
 }
 
 /**
- * Extract inserted rows from INSERT statement for index maintenance
- *
- * Builds a row map indexed by shard ID for index maintenance operations.
- */
-function extractInsertedRows(
-	statement: InsertStatement,
-	params: any[],
-	shardsToQuery: ShardInfo[],
-): Map<number, Record<string, any>[]> {
-	const newRows = new Map<number, Record<string, any>[]>();
-
-	// Initialize empty arrays for each shard
-	for (const shard of shardsToQuery) {
-		newRows.set(shard.shard_id, []);
-	}
-
-	const columns = statement.columns;
-	if (!columns || columns.length === 0) {
-		return newRows;
-	}
-
-	const values = statement.values;
-	if (!values || values.length === 0) {
-		return newRows;
-	}
-
-	// For each inserted row
-	values.forEach((valueList) => {
-		// Build a row object with column names mapped to values
-		const rowData: Record<string, any> = {};
-		valueList.forEach((value, colIndex) => {
-			const colIdent = columns[colIndex];
-			if (colIdent) {
-				// Extract column name from Identifier
-				const colName = typeof colIdent === 'string' ? colIdent : (colIdent as any).name;
-				// Value is either a Literal or Placeholder
-				if (typeof value === 'object' && value !== null) {
-					if ('type' in value && value.type === 'Placeholder') {
-						// It's a placeholder - get value from params
-						const paramIndex = (value as any).parameterIndex;
-						rowData[colName] = params[paramIndex] ?? null;
-					} else if ('type' in value && value.type === 'Literal') {
-						// It's a literal value
-						rowData[colName] = (value as any).value;
-					}
-				} else {
-					// Direct value (shouldn't happen with parsed AST, but handle it)
-					rowData[colName] = value;
-				}
-			}
-		});
-
-		// Map this row to all target shards (will be filtered by per-shard statements)
-		for (const shard of shardsToQuery) {
-			const shardRows = newRows.get(shard.shard_id) || [];
-			shardRows.push(rowData);
-			newRows.set(shard.shard_id, shardRows);
-		}
-	});
-
-	return newRows;
-}
-
-/**
  * Handle INSERT query
  *
  * This handler:
@@ -237,8 +172,8 @@ export async function handleInsert(
 	// STEP 2: Group INSERT rows by target shard based on shard key
 	// Pass actual shard IDs (not just count) to handle non-0-indexed shards after resharding
 	const shardIds = allShards.map(s => s.shard_id).sort((a, b) => a - b);
-	const perShardStatements = groupInsertByShards(statement, planData.shardKey, shardIds, params);
 
+	const perShardStatements = groupInsertByShards(statement, planData.shardKey, shardIds, params);
 
 	// If we couldn't group rows (shard key not in INSERT), execute on all shards
 	const shardsToQuery = perShardStatements.size === 0 ? allShards : allShards.filter(s => perShardStatements.has(s.shard_id));
@@ -298,21 +233,53 @@ export async function handleInsert(
 
 	logger.info`Shard execution completed for INSERT ${{shardsQueried: shardsToQuery.length}}`;
 
-	// STEP 5: Dispatch index maintenance if needed
-	if (planData.virtualIndexes.length > 0) {
-		// Extract inserted rows from statement
-		const newRows = extractInsertedRows(statement, params, shardsToQuery);
+	// STEP 5: Synchronous index maintenance
+	// For each shard that received rows, update the index entries
+	if (planData.virtualIndexes.length > 0 && perShardStatements.size > 0) {
+		const { databaseId, topology } = context;
+		const topologyId = topology.idFromName(databaseId);
+		const topologyStub = topology.get(topologyId);
 
-		// Dispatch index maintenance with extracted rows
-		await dispatchIndexSyncingFromQueryResults(
-			'INSERT',
-			execResult.results as QueryResult[][],
-			tableName,
-			shardsToQuery,
-			planData.virtualIndexes,
-			context,
-			() => ({ newRows }),
-		);
+
+		for (const [shardId, { statement: shardStatement, params: shardParams }] of perShardStatements) {
+			// Extract the indexed column values from the INSERT statement
+			for (const index of planData.virtualIndexes) {
+				const indexColumns = JSON.parse(index.columns) as string[];
+
+				// For each row in the INSERT
+				for (const row of shardStatement.values) {
+					const values: any[] = [];
+					let hasNull = false;
+
+					for (const colName of indexColumns) {
+						const columnIndex = shardStatement.columns?.findIndex((col: any) => col.name === colName) ?? -1;
+						if (columnIndex === -1) {
+							hasNull = true;
+							break;
+						}
+
+						const valueExpr = row[columnIndex];
+						let value: any = null;
+						if (valueExpr?.type === 'Literal') {
+							value = valueExpr.value;
+						} else if (valueExpr?.type === 'Placeholder') {
+							value = shardParams[valueExpr.parameterIndex];
+						}
+
+						if (value === null || value === undefined) {
+							hasNull = true;
+							break;
+						}
+						values.push(value);
+					}
+
+					if (!hasNull && values.length === indexColumns.length) {
+						const keyValue = indexColumns.length === 1 ? String(values[0]) : JSON.stringify(values);
+						await topologyStub.addShardToIndexEntry(index.index_name, keyValue, shardId);
+					}
+				}
+			}
+		}
 	}
 
 	// STEP 6: Invalidate cache entries for write operation
