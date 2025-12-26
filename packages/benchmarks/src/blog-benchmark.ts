@@ -16,15 +16,17 @@ import {
 	type WorkflowEvent,
 	type WorkflowStep,
 } from "cloudflare:workers";
-import type { BigDaddyEnv, ConnectionConfig, SqlFunction } from "big-daddy";
-import { createConnection } from "big-daddy";
+import type { ConnectionConfig, SqlFunction } from "big-daddy";
 
 interface BenchmarkEnv {
-	STORAGE: DurableObjectNamespace;
-	TOPOLOGY: DurableObjectNamespace;
-	INDEX_QUEUE: Queue;
+	BIG_DADDY: {
+		createConnection(
+			databaseId: string,
+			config: ConnectionConfig,
+		): Promise<SqlFunction>;
+	};
 	SEED_WORKFLOW: Workflow;
-	AI: Ai;
+	AI?: Ai;
 }
 
 /**
@@ -131,14 +133,9 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 
 		// Step 1: Create SQL connection
 		const sql = await step.do("create-connection", async () => {
-			const connectionConfig: ConnectionConfig = {
+			return await this.env.BIG_DADDY.createConnection(databaseId, {
 				nodes: 8, // 8 storage nodes for sharding
-			};
-			return await createConnection(
-				databaseId,
-				connectionConfig,
-				this.env as unknown as BigDaddyEnv,
-			);
+			});
 		});
 
 		// Step 2: Create schema
@@ -409,11 +406,10 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		const startTime = Date.now();
 		const databaseId = "blog-benchmark";
 
-		const sql = await createConnection(
-			databaseId,
-			{ nodes: 8, correlationId },
-			this.env as unknown as BigDaddyEnv,
-		);
+		const sql = await this.env.BIG_DADDY.createConnection(databaseId, {
+			nodes: 8,
+			correlationId,
+		});
 
 		// Users table
 		await sql`
@@ -539,11 +535,10 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		const startTime = Date.now();
 		const databaseId = "blog-benchmark";
 
-		const sql = await createConnection(
-			databaseId,
-			{ nodes: 8, correlationId },
-			this.env as unknown as BigDaddyEnv,
-		);
+		const sql = await this.env.BIG_DADDY.createConnection(databaseId, {
+			nodes: 8,
+			correlationId,
+		});
 
 		await sql`DROP TABLE IF EXISTS likes`;
 		await sql`DROP TABLE IF EXISTS comments`;
@@ -572,11 +567,10 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		const startTime = Date.now();
 		const databaseId = "blog-benchmark";
 
-		const sql = await createConnection(
-			databaseId,
-			{ nodes: 8, correlationId },
-			this.env as unknown as BigDaddyEnv,
-		);
+		const sql = await this.env.BIG_DADDY.createConnection(databaseId, {
+			nodes: 8,
+			correlationId,
+		});
 
 		const usersResult = await sql`SELECT COUNT(*) as count FROM users`;
 		const postsResult = await sql`SELECT COUNT(*) as count FROM posts`;
@@ -614,11 +608,10 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		const databaseId = "blog-benchmark";
 		const username = url.searchParams.get("username") || "HappyPanda%";
 
-		const sql = await createConnection(
-			databaseId,
-			{ nodes: 8, correlationId },
-			this.env as unknown as BigDaddyEnv,
-		);
+		const sql = await this.env.BIG_DADDY.createConnection(databaseId, {
+			nodes: 8,
+			correlationId,
+		});
 
 		const result =
 			await sql`SELECT * FROM users WHERE username LIKE ${username} LIMIT 10`;
@@ -651,11 +644,10 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		const databaseId = "blog-benchmark";
 		const userId = parseInt(url.searchParams.get("user_id") || "1000", 10);
 
-		const sql = await createConnection(
-			databaseId,
-			{ nodes: 8, correlationId },
-			this.env as unknown as BigDaddyEnv,
-		);
+		const sql = await this.env.BIG_DADDY.createConnection(databaseId, {
+			nodes: 8,
+			correlationId,
+		});
 
 		const result =
 			await sql`SELECT * FROM posts WHERE user_id = ${userId} LIMIT 10`;
@@ -689,11 +681,10 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		const databaseId = "blog-benchmark";
 		const postId = parseInt(url.searchParams.get("post_id") || "2000", 10);
 
-		const sql = await createConnection(
-			databaseId,
-			{ nodes: 8, correlationId },
-			this.env as unknown as BigDaddyEnv,
-		);
+		const sql = await this.env.BIG_DADDY.createConnection(databaseId, {
+			nodes: 8,
+			correlationId,
+		});
 
 		const postResult = await sql`SELECT * FROM posts WHERE id = ${postId}`;
 		const commentsResult =
@@ -727,11 +718,10 @@ export default class BlogBenchmarkWorker extends WorkerEntrypoint<BenchmarkEnv> 
 		const databaseId = "blog-benchmark";
 		const userId = parseInt(url.searchParams.get("user_id") || "1000", 10);
 
-		const sql = await createConnection(
-			databaseId,
-			{ nodes: 8, correlationId },
-			this.env as unknown as BigDaddyEnv,
-		);
+		const sql = await this.env.BIG_DADDY.createConnection(databaseId, {
+			nodes: 8,
+			correlationId,
+		});
 
 		// Get user's posts
 		const postsResult =
