@@ -128,20 +128,20 @@ function randomComment(): string {
  * Seed Workflow - Populates the database with test data
  */
 export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
+	private async getConnection(databaseId: string) {
+		return await this.env.BIG_DADDY.createConnection(databaseId, {
+			nodes: 8,
+		});
+	}
+
 	override async run(event: WorkflowEvent<SeedParams>, step: WorkflowStep) {
 		const { databaseId, config } = event.payload;
 
-		// Step 1: Create SQL connection
-		const sql = await step.do("create-connection", async () => {
-			return await this.env.BIG_DADDY.createConnection(databaseId, {
-				nodes: 8, // 8 storage nodes for sharding
-			});
-		});
-
-		// Step 2: Create schema
+		// Step 1: Create schema
 		await step.do("create-schema", async () => {
-			// Users table
-			await (sql as SqlFunction)`
+			const sql = await this.getConnection(databaseId);
+
+			await sql`
 				CREATE TABLE IF NOT EXISTS users (
 					id INTEGER PRIMARY KEY,
 					username TEXT NOT NULL,
@@ -150,12 +150,9 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 					created_at INTEGER NOT NULL
 				)
 			`;
+			await sql`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`;
 
-			// Create index on username
-			await (sql as SqlFunction)`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`;
-
-			// Posts table
-			await (sql as SqlFunction)`
+			await sql`
 				CREATE TABLE IF NOT EXISTS posts (
 					id INTEGER PRIMARY KEY,
 					user_id INTEGER NOT NULL,
@@ -164,12 +161,9 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 					published_at INTEGER NOT NULL
 				)
 			`;
+			await sql`CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id)`;
 
-			// Create index on user_id for post lookups
-			await (sql as SqlFunction)`CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id)`;
-
-			// Comments table
-			await (sql as SqlFunction)`
+			await sql`
 				CREATE TABLE IF NOT EXISTS comments (
 					id INTEGER PRIMARY KEY,
 					post_id INTEGER NOT NULL,
@@ -178,13 +172,10 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 					created_at INTEGER NOT NULL
 				)
 			`;
+			await sql`CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id)`;
+			await sql`CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments(user_id)`;
 
-			// Create indexes for comment lookups
-			await (sql as SqlFunction)`CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id)`;
-			await (sql as SqlFunction)`CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments(user_id)`;
-
-			// Likes table
-			await (sql as SqlFunction)`
+			await sql`
 				CREATE TABLE IF NOT EXISTS likes (
 					id INTEGER PRIMARY KEY,
 					post_id INTEGER NOT NULL,
@@ -192,15 +183,14 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 					created_at INTEGER NOT NULL
 				)
 			`;
-
-			// Create composite index for unique likes and lookups
-			await (sql as SqlFunction)`CREATE INDEX IF NOT EXISTS idx_likes_post_user ON likes(post_id, user_id)`;
+			await sql`CREATE INDEX IF NOT EXISTS idx_likes_post_user ON likes(post_id, user_id)`;
 
 			return { success: true };
 		});
 
-		// Step 3: Seed users
+		// Step 2: Seed users
 		const userIds = await step.do("seed-users", async () => {
+			const sql = await this.getConnection(databaseId);
 			const ids: number[] = [];
 			const now = Date.now();
 
@@ -210,7 +200,7 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 				const email = `${username.toLowerCase()}@example.com`;
 				const bio = `I'm a blogger who loves to write about technology.`;
 
-				await (sql as SqlFunction)`
+				await sql`
 					INSERT INTO users (id, username, email, bio, created_at)
 					VALUES (${userId}, ${username}, ${email}, ${bio}, ${now})
 				`;
@@ -221,8 +211,9 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 			return ids;
 		});
 
-		// Step 4: Seed posts
+		// Step 3: Seed posts
 		const postIds = await step.do("seed-posts", async () => {
+			const sql = await this.getConnection(databaseId);
 			const ids: number[] = [];
 			const now = Date.now();
 
@@ -234,7 +225,7 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 				const title = randomPostTitle();
 				const content = randomPostContent();
 
-				await (sql as SqlFunction)`
+				await sql`
 					INSERT INTO posts (id, user_id, title, content, published_at)
 					VALUES (${postId}, ${userId}, ${title}, ${content}, ${now})
 				`;
@@ -245,8 +236,9 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 			return ids;
 		});
 
-		// Step 5: Seed comments
+		// Step 4: Seed comments
 		await step.do("seed-comments", async () => {
+			const sql = await this.getConnection(databaseId);
 			const now = Date.now();
 
 			for (let i = 0; i < config.numComments; i++) {
@@ -259,7 +251,7 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 				] as number;
 				const content = randomComment();
 
-				await (sql as SqlFunction)`
+				await sql`
 					INSERT INTO comments (id, post_id, user_id, content, created_at)
 					VALUES (${commentId}, ${postId}, ${userId}, ${content}, ${now})
 				`;
@@ -268,8 +260,9 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 			return { success: true };
 		});
 
-		// Step 6: Seed likes
+		// Step 5: Seed likes
 		await step.do("seed-likes", async () => {
+			const sql = await this.getConnection(databaseId);
 			const now = Date.now();
 			const existingLikes = new Set<string>();
 
@@ -279,7 +272,6 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 				let userId: number;
 				let key: string;
 
-				// Ensure unique post_id/user_id combinations
 				do {
 					postId = postIds[
 						Math.floor(Math.random() * postIds.length)
@@ -292,7 +284,7 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 
 				existingLikes.add(key);
 
-				await (sql as SqlFunction)`
+				await sql`
 					INSERT INTO likes (id, post_id, user_id, created_at)
 					VALUES (${likeId}, ${postId}, ${userId}, ${now})
 				`;
