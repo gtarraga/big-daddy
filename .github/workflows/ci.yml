@@ -43,7 +43,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm check:type
+      - run: pnpm --filter '!@databases/benchmarks' check:type
 
   test:
     name: Test

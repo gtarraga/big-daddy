@@ -133,7 +133,7 @@ describe("Topology Durable Object", () => {
 
 			const topology = await stub.getTopology();
 			expect(topology.tables).toHaveLength(1);
-			expect(topology.tables[0].table_name).toBe("users");
+			expect(topology.tables[0]!.table_name).toBe("users");
 
 			// Verify table_shards were created
 			const userShards = topology.table_shards.filter(
@@ -143,14 +143,14 @@ describe("Topology Durable Object", () => {
 
 			// Verify shards are distributed across nodes using modulo
 			// With 2 nodes and 4 shards: shard 0 and 2 should map to same node, 1 and 3 to the other
-			const node0 = userShards[0].node_id;
-			const node1 = userShards[1].node_id;
-			expect(userShards[0].shard_id).toBe(0);
-			expect(userShards[1].shard_id).toBe(1);
-			expect(userShards[2].shard_id).toBe(2);
-			expect(userShards[2].node_id).toBe(node0); // 2 % 2 = 0, same as shard 0
-			expect(userShards[3].shard_id).toBe(3);
-			expect(userShards[3].node_id).toBe(node1); // 3 % 2 = 1, same as shard 1
+			const node0 = userShards[0]!.node_id;
+			const node1 = userShards[1]!.node_id;
+			expect(userShards[0]!.shard_id).toBe(0);
+			expect(userShards[1]!.shard_id).toBe(1);
+			expect(userShards[2]!.shard_id).toBe(2);
+			expect(userShards[2]!.node_id).toBe(node0); // 2 % 2 = 0, same as shard 0
+			expect(userShards[3]!.shard_id).toBe(3);
+			expect(userShards[3]!.node_id).toBe(node1); // 3 % 2 = 1, same as shard 1
 			expect(node0).not.toBe(node1); // Nodes should be different
 		});
 
@@ -190,7 +190,7 @@ describe("Topology Durable Object", () => {
 			});
 
 			const topology = await stub.getTopology();
-			expect(topology.tables[0].block_size).toBe(1000);
+			expect(topology.tables[0]!.block_size).toBe(1000);
 		});
 
 		it("should remove tables", async () => {
@@ -264,14 +264,14 @@ describe("Topology Durable Object", () => {
 			// Verify index was created
 			const topology = await stub.getTopology();
 			expect(topology.virtual_indexes).toHaveLength(1);
-			expect(topology.virtual_indexes[0].index_name).toBe("idx_email");
-			expect(topology.virtual_indexes[0].table_name).toBe("users");
-			expect(JSON.parse(topology.virtual_indexes[0].columns)).toEqual([
+			expect(topology.virtual_indexes[0]!.index_name).toBe("idx_email");
+			expect(topology.virtual_indexes[0]!.table_name).toBe("users");
+			expect(JSON.parse(topology.virtual_indexes[0]!.columns)).toEqual([
 				"email",
 			]);
-			expect(topology.virtual_indexes[0].index_type).toBe("hash");
-			expect(topology.virtual_indexes[0].status).toBe("building");
-			expect(topology.virtual_indexes[0].error_message).toBeNull();
+			expect(topology.virtual_indexes[0]!.index_type).toBe("hash");
+			expect(topology.virtual_indexes[0]!.status).toBe("building");
+			expect(topology.virtual_indexes[0]!.error_message).toBeNull();
 		});
 
 		it("should not allow duplicate index names", async () => {
@@ -355,8 +355,8 @@ describe("Topology Durable Object", () => {
 			await stub.updateIndexStatus("idx_email", "ready");
 
 			const topology = await stub.getTopology();
-			expect(topology.virtual_indexes[0].status).toBe("ready");
-			expect(topology.virtual_indexes[0].error_message).toBeNull();
+			expect(topology.virtual_indexes[0]!.status).toBe("ready");
+			expect(topology.virtual_indexes[0]!.error_message).toBeNull();
 		});
 
 		it("should update index status with error message", async () => {
@@ -391,8 +391,8 @@ describe("Topology Durable Object", () => {
 			);
 
 			const topology = await stub.getTopology();
-			expect(topology.virtual_indexes[0].status).toBe("failed");
-			expect(topology.virtual_indexes[0].error_message).toBe(
+			expect(topology.virtual_indexes[0]!.status).toBe("failed");
+			expect(topology.virtual_indexes[0]!.error_message).toBe(
 				"Column does not exist",
 			);
 		});
@@ -428,11 +428,11 @@ describe("Topology Durable Object", () => {
 
 			const topology = await stub.getTopology();
 			expect(topology.virtual_index_entries).toHaveLength(1);
-			expect(topology.virtual_index_entries[0].index_name).toBe("idx_email");
-			expect(topology.virtual_index_entries[0].key_value).toBe(
+			expect(topology.virtual_index_entries[0]!.index_name).toBe("idx_email");
+			expect(topology.virtual_index_entries[0]!.key_value).toBe(
 				"alice@example.com",
 			);
-			expect(JSON.parse(topology.virtual_index_entries[0].shard_ids)).toEqual([
+			expect(JSON.parse(topology.virtual_index_entries[0]!.shard_ids)).toEqual([
 				0, 1,
 			]);
 
@@ -443,9 +443,9 @@ describe("Topology Durable Object", () => {
 
 			const topology2 = await stub.getTopology();
 			expect(topology2.virtual_index_entries).toHaveLength(1);
-			expect(JSON.parse(topology2.virtual_index_entries[0].shard_ids)).toEqual([
-				0,
-			]);
+			expect(JSON.parse(topology2.virtual_index_entries[0]!.shard_ids)).toEqual(
+				[0],
+			);
 		});
 
 		it("should get indexed shards for a value", async () => {
@@ -575,9 +575,9 @@ describe("Topology Durable Object", () => {
 				(e: VirtualIndexEntry) => e.key_value === "charlie@example.com",
 			);
 
-			expect(JSON.parse(alice?.shard_ids)).toEqual([0, 1]);
-			expect(JSON.parse(bob?.shard_ids)).toEqual([1]);
-			expect(JSON.parse(charlie?.shard_ids)).toEqual([0]);
+			expect(JSON.parse(alice!.shard_ids)).toEqual([0, 1]);
+			expect(JSON.parse(bob!.shard_ids)).toEqual([1]);
+			expect(JSON.parse(charlie!.shard_ids)).toEqual([0]);
 		});
 
 		it("should batch upsert update existing entries", async () => {
@@ -632,9 +632,9 @@ describe("Topology Durable Object", () => {
 				(e: VirtualIndexEntry) => e.key_value === "charlie@example.com",
 			);
 
-			expect(JSON.parse(alice?.shard_ids)).toEqual([0]); // Updated
-			expect(JSON.parse(bob?.shard_ids)).toEqual([1]); // Unchanged
-			expect(JSON.parse(charlie?.shard_ids)).toEqual([0, 1]); // New
+			expect(JSON.parse(alice!.shard_ids)).toEqual([0]); // Updated
+			expect(JSON.parse(bob!.shard_ids)).toEqual([1]); // Unchanged
+			expect(JSON.parse(charlie!.shard_ids)).toEqual([0, 1]); // New
 		});
 
 		it("should handle empty batch upsert", async () => {
@@ -720,9 +720,9 @@ describe("Topology Durable Object", () => {
 				(e: VirtualIndexEntry) => e.key_value === "user99@example.com",
 			);
 
-			expect(JSON.parse(user0?.shard_ids)).toEqual([0]);
-			expect(JSON.parse(user50?.shard_ids)).toEqual([0]);
-			expect(JSON.parse(user99?.shard_ids)).toEqual([1]);
+			expect(JSON.parse(user0!.shard_ids)).toEqual([0]);
+			expect(JSON.parse(user50!.shard_ids)).toEqual([0]);
+			expect(JSON.parse(user99!.shard_ids)).toEqual([1]);
 		});
 	});
 
@@ -783,8 +783,8 @@ describe("Topology Durable Object", () => {
 				const planData = await stub.getQueryPlanData("users", statement, [123]);
 
 				expect(planData.shardsToQuery).toHaveLength(1); // Single shard
-				expect(planData.shardsToQuery[0].shard_id).toBeGreaterThanOrEqual(0);
-				expect(planData.shardsToQuery[0].shard_id).toBeLessThan(3);
+				expect(planData.shardsToQuery[0]!.shard_id).toBeGreaterThanOrEqual(0);
+				expect(planData.shardsToQuery[0]!.shard_id).toBeLessThan(3);
 			});
 
 			it("should use virtual index to reduce shard fan-out", async () => {
@@ -821,9 +821,9 @@ describe("Topology Durable Object", () => {
 				]);
 
 				expect(planData.shardsToQuery).toHaveLength(1); // Reduced to single shard via index
-				expect(planData.shardsToQuery[0].shard_id).toBe(1);
+				expect(planData.shardsToQuery[0]!.shard_id).toBe(1);
 				expect(planData.virtualIndexes).toHaveLength(1);
-				expect(planData.virtualIndexes[0].index_name).toBe("idx_email");
+				expect(planData.virtualIndexes[0]!.index_name).toBe("idx_email");
 			});
 
 			it("should return empty array when indexed value does not exist", async () => {
@@ -1003,7 +1003,7 @@ describe("Topology Durable Object", () => {
 				]);
 
 				expect(planData.shardsToQuery).toHaveLength(1); // Reduced via index
-				expect(planData.shardsToQuery[0].shard_id).toBe(0);
+				expect(planData.shardsToQuery[0]!.shard_id).toBe(0);
 				expect(planData.virtualIndexes).toHaveLength(1);
 			});
 
@@ -1048,7 +1048,7 @@ describe("Topology Durable Object", () => {
 				// Both ready indexes should be included for index maintenance
 				expect(planData.virtualIndexes).toHaveLength(2);
 				const indexNames = planData.virtualIndexes
-					.map((idx: VirtualIndex) => idx.index_name)
+					.map((idx) => idx.index_name)
 					.sort();
 				expect(indexNames).toEqual(["idx_country", "idx_email"]);
 			});
@@ -1145,7 +1145,7 @@ describe("Topology Durable Object", () => {
 				]);
 
 				expect(planData.shardsToQuery).toHaveLength(1); // Reduced via index
-				expect(planData.shardsToQuery[0].shard_id).toBe(2);
+				expect(planData.shardsToQuery[0]!.shard_id).toBe(2);
 				expect(planData.virtualIndexes).toHaveLength(1);
 			});
 

@@ -87,8 +87,8 @@ describe("Build Index", () => {
 		const topology = await topologyStub.getTopology();
 
 		expect(topology.virtual_indexes).toHaveLength(1);
-		expect(topology.virtual_indexes[0].index_name).toBe("idx_email");
-		expect(topology.virtual_indexes[0].status).toBe("ready"); // Auto-built in test environment
+		expect(topology.virtual_indexes[0]!.index_name).toBe("idx_email");
+		expect(topology.virtual_indexes[0]!.status).toBe("ready"); // Auto-built in test environment
 
 		// Verify all 10 email values are indexed
 		expect(topology.virtual_index_entries).toHaveLength(10);
@@ -109,9 +109,9 @@ describe("Build Index", () => {
 		expect(user10Entry).toBeDefined();
 
 		// Each email should be in exactly 1 shard (unique emails)
-		expect(JSON.parse(user1Entry?.shard_ids)).toHaveLength(1);
-		expect(JSON.parse(user5Entry?.shard_ids)).toHaveLength(1);
-		expect(JSON.parse(user10Entry?.shard_ids)).toHaveLength(1);
+		expect(JSON.parse(user1Entry!.shard_ids)).toHaveLength(1);
+		expect(JSON.parse(user5Entry!.shard_ids)).toHaveLength(1);
+		expect(JSON.parse(user10Entry!.shard_ids)).toHaveLength(1);
 	});
 
 	it("should manually trigger build index job and verify topology update", async () => {
@@ -131,7 +131,7 @@ describe("Build Index", () => {
 
 		// Verify index starts in 'building' status
 		let topology = await topologyStub.getTopology();
-		expect(topology.virtual_indexes[0].status).toBe("building");
+		expect(topology.virtual_indexes[0]!.status).toBe("building");
 		expect(topology.virtual_index_entries).toHaveLength(0);
 
 		// Manually trigger the build index job
@@ -148,8 +148,8 @@ describe("Build Index", () => {
 
 		// Verify index is now 'ready' with all entries
 		topology = await topologyStub.getTopology();
-		expect(topology.virtual_indexes[0].status).toBe("ready");
-		expect(topology.virtual_indexes[0].error_message).toBeNull();
+		expect(topology.virtual_indexes[0]!.status).toBe("ready");
+		expect(topology.virtual_indexes[0]!.error_message).toBeNull();
 		expect(topology.virtual_index_entries).toHaveLength(10);
 
 		// Verify all names are indexed
@@ -210,7 +210,7 @@ describe("Build Index", () => {
 
 		// Verify composite index entries
 		const topology = await topologyStub.getTopology();
-		expect(topology.virtual_indexes[0].status).toBe("ready");
+		expect(topology.virtual_indexes[0]!.status).toBe("ready");
 
 		// Should have 6 unique combinations:
 		// ["Electronics","Phones"], ["Electronics","Laptops"], ["Electronics","Tablets"],
@@ -275,7 +275,7 @@ describe("Build Index", () => {
 
 		// Verify NULL values are skipped (only 7 non-NULL emails indexed)
 		const topology = await topologyStub.getTopology();
-		expect(topology.virtual_indexes[0].status).toBe("ready");
+		expect(topology.virtual_indexes[0]!.status).toBe("ready");
 		expect(topology.virtual_index_entries).toHaveLength(7); // 10 rows - 3 NULLs = 7
 
 		// Verify no NULL entries
@@ -315,9 +315,9 @@ describe("Build Index", () => {
 
 		// Verify index status is 'failed' with error message
 		const topology = await topologyStub.getTopology();
-		expect(topology.virtual_indexes[0].status).toBe("failed");
-		expect(topology.virtual_indexes[0].error_message).toBeTruthy();
-		expect(topology.virtual_indexes[0].error_message).toContain(
+		expect(topology.virtual_indexes[0]!.status).toBe("failed");
+		expect(topology.virtual_indexes[0]!.error_message).toBeTruthy();
+		expect(topology.virtual_indexes[0]!.error_message).toContain(
 			"nonexistent_column",
 		);
 	});
@@ -365,7 +365,7 @@ describe("Build Index", () => {
 
 		// Verify index was built across all shards
 		const topology = await topologyStub.getTopology();
-		expect(topology.virtual_indexes[0].status).toBe("ready");
+		expect(topology.virtual_indexes[0]!.status).toBe("ready");
 
 		// Should have 2 unique status values: 'pending' and 'completed'
 		expect(topology.virtual_index_entries).toHaveLength(2);
@@ -381,8 +381,8 @@ describe("Build Index", () => {
 		expect(completedEntry).toBeDefined();
 
 		// Each status value may be present on multiple shards
-		const pendingShards = JSON.parse(pendingEntry?.shard_ids);
-		const completedShards = JSON.parse(completedEntry?.shard_ids);
+		const pendingShards = JSON.parse(pendingEntry!.shard_ids);
+		const completedShards = JSON.parse(completedEntry!.shard_ids);
 
 		// At least 1 shard should have each status
 		expect(pendingShards.length).toBeGreaterThanOrEqual(1);
@@ -439,7 +439,7 @@ describe("Build Index", () => {
 
 		// Verify only 3 unique entries (INFO, ERROR, WARN)
 		const topology = await topologyStub.getTopology();
-		expect(topology.virtual_indexes[0].status).toBe("ready");
+		expect(topology.virtual_indexes[0]!.status).toBe("ready");
 		expect(topology.virtual_index_entries).toHaveLength(3);
 
 		const levels = topology.virtual_index_entries
@@ -453,6 +453,6 @@ describe("Build Index", () => {
 			(e: VirtualIndexEntry) => e.key_value === "INFO",
 		);
 		expect(infoEntry).toBeDefined();
-		expect(JSON.parse(infoEntry?.shard_ids).length).toBeGreaterThanOrEqual(1);
+		expect(JSON.parse(infoEntry!.shard_ids).length).toBeGreaterThanOrEqual(1);
 	});
 });

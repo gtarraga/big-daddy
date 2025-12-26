@@ -45,8 +45,9 @@ describe("Conductor", () => {
 				query:
 					'SELECT name FROM sqlite_master WHERE type="table" AND name="products"',
 			});
-			if ("rows" in result) {
-				expect(result.rows).toHaveLength(1);
+			const queryResult = result as { rows: unknown[] };
+			if (queryResult.rows) {
+				expect(queryResult.rows).toHaveLength(1);
 			}
 		}
 	});
@@ -360,12 +361,12 @@ describe("Conductor", () => {
 		const topology = await topologyStub.getTopology();
 
 		expect(topology.virtual_indexes).toHaveLength(1);
-		expect(topology.virtual_indexes[0].index_name).toBe("idx_email");
-		expect(topology.virtual_indexes[0].table_name).toBe("users");
-		expect(JSON.parse(topology.virtual_indexes[0].columns)).toEqual(["email"]);
-		expect(topology.virtual_indexes[0].index_type).toBe("hash");
+		expect(topology.virtual_indexes[0]!.index_name).toBe("idx_email");
+		expect(topology.virtual_indexes[0]!.table_name).toBe("users");
+		expect(JSON.parse(topology.virtual_indexes[0]!.columns)).toEqual(["email"]);
+		expect(topology.virtual_indexes[0]!.index_type).toBe("hash");
 		// In test environment, queue processing happens automatically, so status is 'ready'
-		expect(topology.virtual_indexes[0].status).toBe("ready");
+		expect(topology.virtual_indexes[0]!.status).toBe("ready");
 	});
 
 	it("should create a unique index", async () => {
@@ -380,7 +381,7 @@ describe("Conductor", () => {
 		const topologyStub = env.TOPOLOGY.get(env.TOPOLOGY.idFromName(dbId));
 		const topology = await topologyStub.getTopology();
 
-		expect(topology.virtual_indexes[0].index_type).toBe("unique");
+		expect(topology.virtual_indexes[0]!.index_type).toBe("unique");
 	});
 
 	it("should handle CREATE INDEX IF NOT EXISTS", async () => {
@@ -440,13 +441,13 @@ describe("Conductor", () => {
 		const topology = await topologyStub.getTopology();
 
 		expect(topology.virtual_indexes).toHaveLength(1);
-		expect(topology.virtual_indexes[0].index_name).toBe("idx_country_email");
-		expect(JSON.parse(topology.virtual_indexes[0].columns)).toEqual([
+		expect(topology.virtual_indexes[0]!.index_name).toBe("idx_country_email");
+		expect(JSON.parse(topology.virtual_indexes[0]!.columns)).toEqual([
 			"country",
 			"email",
 		]);
 		// In test environment, queue processing happens automatically, so status is 'ready'
-		expect(topology.virtual_indexes[0].status).toBe("ready");
+		expect(topology.virtual_indexes[0]!.status).toBe("ready");
 	});
 
 	it("should use composite indexes for AND WHERE clauses", async () => {
@@ -637,13 +638,13 @@ describe("Conductor", () => {
 				const storageStub = env.STORAGE.get(
 					env.STORAGE.idFromName(node.node_id),
 				);
-				const schemaResult = await storageStub.executeQuery({
+				const schemaResult = (await storageStub.executeQuery({
 					query:
 						'SELECT sql FROM sqlite_master WHERE type="table" AND name="users"',
-				});
+				})) as { rows: { sql: string }[] };
 
-				if ("rows" in schemaResult && schemaResult.rows.length > 0) {
-					const createTableSQL = schemaResult.rows[0].sql;
+				if (schemaResult.rows.length > 0) {
+					const createTableSQL = schemaResult.rows[0]!.sql;
 
 					// Should contain _virtualShard column
 					expect(createTableSQL).toContain("_virtualShard");
@@ -678,13 +679,13 @@ describe("Conductor", () => {
 				const storageStub = env.STORAGE.get(
 					env.STORAGE.idFromName(node.node_id),
 				);
-				const schemaResult = await storageStub.executeQuery<{ sql: string }>({
+				const schemaResult = (await storageStub.executeQuery({
 					query:
 						'SELECT sql FROM sqlite_master WHERE type="table" AND name="events"',
-				});
+				})) as { rows: { sql: string }[] };
 
-				if ("rows" in schemaResult && schemaResult.rows.length > 0) {
-					const createTableSQL = schemaResult.rows[0].sql;
+				if (schemaResult.rows.length > 0) {
+					const createTableSQL = schemaResult.rows[0]!.sql;
 
 					// Should have _virtualShard prepended to composite primary key
 					expect(createTableSQL).toMatch(
@@ -711,7 +712,7 @@ describe("Conductor", () => {
 			// Manually insert directly to storage with different _virtualShard value
 			// This simulates what happens during resharding when copying data
 			const storageStub = env.STORAGE.get(
-				env.STORAGE.idFromName(topology.storage_nodes[0].node_id),
+				env.STORAGE.idFromName(topology.storage_nodes[0]!.node_id),
 			);
 
 			// Insert with _virtualShard=1 (different from default shard 0)

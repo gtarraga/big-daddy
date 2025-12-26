@@ -88,7 +88,7 @@ function randomPostTitle(): string {
 		"Performance Tuning Tips",
 		"Building Real-time Applications",
 	];
-	return titles[Math.floor(Math.random() * titles.length)]!;
+	return titles[Math.floor(Math.random() * titles.length)] as string;
 }
 
 /**
@@ -102,7 +102,7 @@ function randomPostContent(): string {
 		"Let me share some insights from my recent project experience.",
 		"Here are some best practices I've learned over the years.",
 	];
-	return paragraphs[Math.floor(Math.random() * paragraphs.length)]!;
+	return paragraphs[Math.floor(Math.random() * paragraphs.length)] as string;
 }
 
 /**
@@ -119,7 +119,7 @@ function randomComment(): string {
 		"Could you elaborate more on this topic?",
 		"I have a question about the implementation.",
 	];
-	return comments[Math.floor(Math.random() * comments.length)]!;
+	return comments[Math.floor(Math.random() * comments.length)] as string;
 }
 
 /**
@@ -231,7 +231,9 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 
 			for (let i = 0; i < config.numPosts; i++) {
 				const postId = 2000 + i;
-				const userId = userIds[Math.floor(Math.random() * userIds.length)]!;
+				const userId = userIds[
+					Math.floor(Math.random() * userIds.length)
+				] as number;
 				const title = randomPostTitle();
 				const content = randomPostContent();
 
@@ -252,8 +254,12 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 
 			for (let i = 0; i < config.numComments; i++) {
 				const commentId = 3000 + i;
-				const postId = postIds[Math.floor(Math.random() * postIds.length)]!;
-				const userId = userIds[Math.floor(Math.random() * userIds.length)]!;
+				const postId = postIds[
+					Math.floor(Math.random() * postIds.length)
+				] as number;
+				const userId = userIds[
+					Math.floor(Math.random() * userIds.length)
+				] as number;
 				const content = randomComment();
 
 				await (sql as SqlFunction)`
@@ -278,8 +284,12 @@ export class SeedWorkflow extends WorkflowEntrypoint<BenchmarkEnv, SeedParams> {
 
 				// Ensure unique post_id/user_id combinations
 				do {
-					postId = postIds[Math.floor(Math.random() * postIds.length)]!;
-					userId = userIds[Math.floor(Math.random() * userIds.length)]!;
+					postId = postIds[
+						Math.floor(Math.random() * postIds.length)
+					] as number;
+					userId = userIds[
+						Math.floor(Math.random() * userIds.length)
+					] as number;
 					key = `${postId}-${userId}`;
 				} while (existingLikes.has(key));
 

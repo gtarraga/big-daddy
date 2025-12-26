@@ -55,7 +55,7 @@ function randomUser() {
 		email: `user${userId}@example.com`,
 		name: `User ${userId}`,
 		age: Math.floor(Math.random() * 80) + 18,
-		country: countries[Math.floor(Math.random() * countries.length)]!,
+		country: countries[Math.floor(Math.random() * countries.length)] as string,
 	};
 }
 
@@ -313,9 +313,8 @@ async function handleSelectById(
 	correlationId: string,
 	url: URL,
 ): Promise<Response> {
-	const userId = url.searchParams.get("id")
-		? parseInt(url.searchParams.get("id")!, 10)
-		: randomUserId();
+	const idParam = url.searchParams.get("id");
+	const userId = idParam ? parseInt(idParam, 10) : randomUserId();
 
 	const startTime = Date.now();
 

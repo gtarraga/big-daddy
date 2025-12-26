@@ -119,9 +119,9 @@ describe("Resharding", () => {
 			});
 
 			// Verify shard IDs are sequential (1, 2, 3)
-			expect(newShards[0].shard_id).toBe(1);
-			expect(newShards[1].shard_id).toBe(2);
-			expect(newShards[2].shard_id).toBe(3);
+			expect(newShards[0]!.shard_id).toBe(1);
+			expect(newShards[1]!.shard_id).toBe(2);
+			expect(newShards[2]!.shard_id).toBe(3);
 
 			// Verify shards distributed across nodes
 			const nodes = new Set(newShards.map((s: TableShard) => s.node_id));
@@ -290,7 +290,7 @@ describe("Resharding", () => {
 			// Assert
 			// Verify ReshardTableJob would be created with correct parameters
 			expect(newShards).toHaveLength(3);
-			expect(newShards[0].status).toBe("pending");
+			expect(newShards[0]!.status).toBe("pending");
 
 			// Verify resharding state was created
 			const reshardingState = await topologyStub.getReshardingState(tableName);
@@ -337,7 +337,7 @@ describe("Resharding", () => {
 
 			// Assert - Verify what the PRAGMA handler would return
 			expect(newShards).toHaveLength(3);
-			expect(newShards[0].status).toBe("pending");
+			expect(newShards[0]!.status).toBe("pending");
 
 			// Verify response would contain job ID and status
 			const tableMetadata = topology.tables.find(
@@ -354,7 +354,7 @@ describe("Resharding", () => {
 
 			// Verify properties that would be returned to user
 			expect(reshardingState?.table_name).toBe("users");
-			expect(JSON.parse(reshardingState?.target_shard_ids)).toHaveLength(3);
+			expect(JSON.parse(reshardingState!.target_shard_ids)).toHaveLength(3);
 		});
 	});
 
@@ -648,8 +648,8 @@ describe("Resharding", () => {
 
 			// All changes for this resharding would be tagged with same change_log_id
 			// Timestamps on messages would order them
-			expect(reshardingState?.created_at).toBeLessThanOrEqual(
-				reshardingState?.updated_at,
+			expect(reshardingState!.created_at).toBeLessThanOrEqual(
+				reshardingState!.updated_at,
 			);
 		});
 	});
@@ -750,9 +750,9 @@ describe("Resharding", () => {
 
 			// Verify that new shards have sequential IDs for deterministic routing
 			expect(newShards).toHaveLength(3);
-			expect(newShards[0].shard_id).toBe(1);
-			expect(newShards[1].shard_id).toBe(2);
-			expect(newShards[2].shard_id).toBe(3);
+			expect(newShards[0]!.shard_id).toBe(1);
+			expect(newShards[1]!.shard_id).toBe(2);
+			expect(newShards[2]!.shard_id).toBe(3);
 
 			// Verify each shard has a node assigned (for routing during copy)
 			newShards.forEach((shard: TableShard) => {
@@ -1171,8 +1171,8 @@ describe("Resharding", () => {
 			// Assert
 			// Changes are stored with consistent IDs and timestamps
 			expect(reshardingState?.change_log_id).toBe(changeLogId);
-			expect(reshardingState?.created_at).toBeLessThanOrEqual(
-				reshardingState?.updated_at,
+			expect(reshardingState!.created_at).toBeLessThanOrEqual(
+				reshardingState!.updated_at,
 			);
 			// This ensures that if replay is repeated, it's deterministic and idempotent
 		});
