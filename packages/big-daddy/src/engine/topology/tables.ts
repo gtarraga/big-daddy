@@ -15,7 +15,9 @@ export function runSchemaMigrations(
 ): void {
 	// Migration: Add row_count column to table_shards if not present
 	const tableShardsColumns = tableInfo("table_shards");
-	const hasRowCount = tableShardsColumns.some((col) => col.name === "row_count");
+	const hasRowCount = tableShardsColumns.some(
+		(col) => col.name === "row_count",
+	);
 	if (!hasRowCount && tableShardsColumns.length > 0) {
 		// Table exists but row_count column is missing - add it
 		sqlExec(

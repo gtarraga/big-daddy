@@ -34,28 +34,36 @@ const QueryStatsPanel = ({ result }: { result: QueryResultForStats }) => {
 
 	const rowCount = Array.isArray(rows) ? rows.length : 0;
 	const shardsQueried = shardStats?.length ?? 0;
-	const totalFetched = shardStats?.reduce((sum, s) => sum + (s.rowsReturned ?? 0), 0) ?? 0;
+	const totalFetched =
+		shardStats?.reduce((sum, s) => sum + (s.rowsReturned ?? 0), 0) ?? 0;
 	const cacheHit = cacheStats?.cacheHit;
 
 	return (
 		<div class="mb-3 p-3 bg-gray-50 border border-black text-xs font-mono grid grid-cols-2 sm:grid-cols-4 gap-2">
 			{shardsQueried > 0 && (
 				<div>
-					<span class="text-gray-600">Shards Queried:</span> <span class="font-semibold">{shardsQueried}</span>
+					<span class="text-gray-600">Shards Queried:</span>{" "}
+					<span class="font-semibold">{shardsQueried}</span>
 				</div>
 			)}
 			{totalFetched > 0 && (
 				<div>
-					<span class="text-gray-600">Rows Fetched:</span> <span class="font-semibold">{totalFetched}</span>
+					<span class="text-gray-600">Rows Fetched:</span>{" "}
+					<span class="font-semibold">{totalFetched}</span>
 				</div>
 			)}
 			<div>
-				<span class="text-gray-600">Rows Returned:</span> <span class="font-semibold">{rowCount}</span>
+				<span class="text-gray-600">Rows Returned:</span>{" "}
+				<span class="font-semibold">{rowCount}</span>
 			</div>
 			{cacheHit !== undefined && (
 				<div>
-					<span class="text-gray-600">Cache:</span>{' '}
-					<span class={cacheHit ? 'text-green-700 font-semibold' : 'text-gray-500'}>{cacheHit ? 'HIT' : 'MISS'}</span>
+					<span class="text-gray-600">Cache:</span>{" "}
+					<span
+						class={cacheHit ? "text-green-700 font-semibold" : "text-gray-500"}
+					>
+						{cacheHit ? "HIT" : "MISS"}
+					</span>
 				</div>
 			)}
 		</div>
@@ -132,7 +140,9 @@ export const DashboardPage = ({
 					<div class="text-sm font-semibold text-black mb-2">Result:</div>
 
 					{/* Query Stats Panel */}
-					{typeof sqlResult === 'object' && sqlResult !== null && <QueryStatsPanel result={sqlResult as QueryResultForStats} />}
+					{typeof sqlResult === "object" && sqlResult !== null && (
+						<QueryStatsPanel result={sqlResult as QueryResultForStats} />
+					)}
 
 					<div class="text-xs font-mono text-black whitespace-pre-wrap break-words max-h-96 overflow-y-auto">
 						{JSON.stringify(sqlResult, null, 2)}

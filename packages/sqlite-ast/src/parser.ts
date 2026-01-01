@@ -1,8 +1,6 @@
 import { type Token, tokenize } from "./tokenizer";
 import type {
 	AlterTableStatement,
-	BetweenExpression,
-	BinaryExpression,
 	CaseExpression,
 	ColumnConstraint,
 	ColumnDefinition,
@@ -11,20 +9,15 @@ import type {
 	DeleteStatement,
 	DropTableStatement,
 	Expression,
-	FunctionCall,
 	Identifier,
-	InExpression,
 	InsertStatement,
 	JoinClause,
-	Literal,
 	OrderByClause,
 	PragmaStatement,
 	SelectClause,
 	SelectStatement,
 	Statement,
-	SubqueryExpression,
 	TableConstraint,
-	UnaryExpression,
 	UpdateStatement,
 } from "./types";
 
@@ -50,10 +43,6 @@ class Parser {
 
 	private current(): Token | undefined {
 		return this.tokens[this.position];
-	}
-
-	private peek(): Token | undefined {
-		return this.tokens[this.position + 1];
 	}
 
 	private advance(): Token | undefined {
@@ -733,7 +722,7 @@ class Parser {
 					nextToken,
 				);
 			}
-			name += "." + this.advance()!.token;
+			name += `.${this.advance()!.token}`;
 		}
 
 		return { type: "Identifier", name };

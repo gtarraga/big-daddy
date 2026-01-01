@@ -617,7 +617,8 @@ describe("Distributed LIMIT/OFFSET", () => {
 			}
 
 			// COUNT query - aggregation should merge correctly across shards
-			const result = (await sql`SELECT COUNT(*) as cnt FROM items`) as QueryResult;
+			const result =
+				(await sql`SELECT COUNT(*) as cnt FROM items`) as QueryResult;
 
 			expect(result.rows).toHaveLength(1);
 			expect((result.rows[0] as { cnt: number }).cnt).toBe(30);

@@ -4,6 +4,7 @@
  * Exposes the blog benchmark for load testing Big Daddy.
  */
 
+import type { ConnectionConfig, SqlFunction } from "big-daddy";
 import BlogBenchmarkWorker, { SeedWorkflow } from "./blog-benchmark";
 
 // Re-export the workflow for wrangler to find
@@ -13,8 +14,8 @@ interface BenchmarkEnv {
 	BIG_DADDY: {
 		createConnection(
 			databaseId: string,
-			config: { nodes: number; correlationId?: string },
-		): Promise<unknown>;
+			config: ConnectionConfig,
+		): Promise<SqlFunction>;
 	};
 	SEED_WORKFLOW: Workflow;
 	AI?: Ai;

@@ -14,7 +14,7 @@ import { type BigDaddyEnv, createConnection } from "./index";
  * - /dash/:databaseId - View topology information for a database
  */
 
-export const dashboard = new Hono<{ Bindings: Env }>();
+export const dashboard = new Hono<{ Bindings: BigDaddyEnv }>();
 
 // Set custom HTML renderer
 dashboard.use("*", async (c, next) => {

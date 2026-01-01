@@ -1,7 +1,7 @@
 import type { Literal, SelectStatement } from "@databases/sqlite-ast";
 import { logger } from "../../../logger";
-import { extractTableName as extractTableNameFromAST } from "../../utils/ast-utils";
 import type { ShardRowCount } from "../../topology/types";
+import { extractTableName as extractTableNameFromAST } from "../../utils/ast-utils";
 import type {
 	QueryHandlerContext,
 	QueryResult,
@@ -90,7 +90,11 @@ function isEligibleForLimitRewrite(
 
 	// OFFSET must be absent or literal
 	const globalOffset = extractLiteralNumber(statement.offset) ?? 0;
-	if (statement.offset && globalOffset === 0 && statement.offset.type !== "Literal") {
+	if (
+		statement.offset &&
+		globalOffset === 0 &&
+		statement.offset.type !== "Literal"
+	) {
 		// Non-literal offset present
 		return { eligible: false, globalLimit: null, globalOffset: 0 };
 	}
@@ -268,7 +272,10 @@ export async function handleSelect(
 	const globalOffset = extractLiteralNumber(statement.offset) ?? 0;
 
 	// STEP 2: Check eligibility for per-shard LIMIT/OFFSET rewrite
-	const eligibility = isEligibleForLimitRewrite(statement, shardsToQuery.length);
+	const eligibility = isEligibleForLimitRewrite(
+		statement,
+		shardsToQuery.length,
+	);
 	let rewriteApplied = false;
 	let allResults: QueryResult[] = [];
 	let allShardStats: ShardStats[] = [];
@@ -318,7 +325,9 @@ export async function handleSelect(
 
 			if (rowsGot < expected) {
 				// Query additional shards that weren't in the original plan
-				const queriedShardIds = new Set(limitPlans.map((p) => p.shard.shard_id));
+				const queriedShardIds = new Set(
+					limitPlans.map((p) => p.shard.shard_id),
+				);
 				const additionalShards = shardsToQuery
 					.filter((s) => !queriedShardIds.has(s.shard_id))
 					.sort((a, b) => a.shard_id - b.shard_id);
@@ -330,7 +339,11 @@ export async function handleSelect(
 
 					// Catch-up limit: at least stillNeeded, but batch for efficiency
 					const catchUpLimit = Math.min(stillNeeded + 20, 200);
-					const catchUpStmt = rewriteSelectLimitOffset(statement, 0, catchUpLimit);
+					const catchUpStmt = rewriteSelectLimitOffset(
+						statement,
+						0,
+						catchUpLimit,
+					);
 					const { results, shardStats } = await executeOnShards(
 						context,
 						[shard],
@@ -392,7 +405,10 @@ export async function handleSelect(
 	// Add shard statistics
 	result.shardStats = allShardStats;
 
-	const totalFetched = allShardStats.reduce((sum, s) => sum + s.rowsReturned, 0);
+	const totalFetched = allShardStats.reduce(
+		(sum, s) => sum + s.rowsReturned,
+		0,
+	);
 	logger.info`SELECT query completed ${{ shardsQueried: allShardStats.length }} ${{ rowsFetched: totalFetched }} ${{ rowsReturned: result.rows.length }} ${{ rewriteApplied }}`;
 
 	return result;
