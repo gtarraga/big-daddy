@@ -15,9 +15,10 @@ For CREATE TABLE:
 
 ### `mergeResultsSimple(results, statement)`
 Merges shard results:
-- **SELECT with aggregations**: Properly merges COUNT/SUM/MIN/MAX/AVG
+- **SELECT with aggregations**: Merges COUNT/SUM/MIN/MAX; AVG is an approximation (avg of avgs)
 - **Regular SELECT**: Concatenates rows, strips `_virtualShard`
-- **INSERT/UPDATE/DELETE**: Sums `rowsAffected`
+- **INSERT**: Returns `VALUES.length` (not SQLite's inflated count)
+- **UPDATE/DELETE**: Sums `rowsAffected`
 
 ### `hashToShardId(value, numShards)`
 Consistent hash function for shard routing:

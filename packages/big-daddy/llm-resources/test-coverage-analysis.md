@@ -8,7 +8,7 @@
 | `topology.test.ts` | 1165 | Topology DO, virtual indexes, query planning | ✅ High |
 | `storage.test.ts` | 169 | Storage DO basic operations | ✅ High |
 | `resharding.test.ts` | 2018 | Full resharding workflow | ✅ High |
-| `virtual-index.test.ts` | 574 | Index build E2E | ✅ High |
+| `virtual-index-query.test.ts` | 217 | Virtual index query routing | ✅ High |
 | `topology-cache.test.ts` | 385 | Cache hits/misses/invalidation | ✅ High |
 | `sharded-queries.test.ts` | 204 | Shard routing verification | ✅ High |
 | `build-index.test.ts` | 406 | Index build job processing | ✅ High |

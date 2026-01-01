@@ -4,11 +4,28 @@
 **Flow:**
 1. Extract table name from AST
 2. Get cached query plan → `shardsToQuery`
-3. Execute on shards in parallel
-4. Merge results with `mergeResultsSimple()`
-5. Add cache stats
+3. Check eligibility for LIMIT/OFFSET optimization
+4. If eligible: compute per-shard LIMIT/OFFSET using row counts
+5. Execute on shards (with rewritten LIMIT/OFFSET if eligible)
+6. Merge results with `mergeResultsSimple()`
+7. Apply global pagination (OFFSET/LIMIT) for correctness
+8. Handle stale row count fallback (query additional shards if needed)
+9. Add cache stats
 
 **Key:** Uses topology cache to skip Topology DO calls on cache hits.
+
+### Distributed LIMIT/OFFSET (Phase 2)
+
+**Correctness:** Global LIMIT/OFFSET is always enforced post-merge, guaranteeing correct row counts.
+
+**Optimization:** For eligible fan-out queries, per-shard LIMIT/OFFSET is computed using row counts to reduce over-fetch:
+- Eligibility: No WHERE, no ORDER BY, no aggregation, literal LIMIT/OFFSET
+- Uses prefix sum algorithm across shards sorted by shard_id
+- Fallback: If results are short (stale counts), additional shards are queried
+
+**Not yet supported (future work):**
+- Global ORDER BY + LIMIT (distributed top-K) requires k-way merge
+- See "Future: Distributed Top-K" section below
 
 ---
 
@@ -108,3 +125,22 @@ Generates and queues index events:
 - INSERT → `add` events for new values
 - DELETE → `remove` events for old values
 - UPDATE → `remove` old + `add` new (diff-based)
+
+---
+
+## Future: Distributed Top-K (ORDER BY + LIMIT)
+
+**Not implemented.** Global ORDER BY + LIMIT across shards requires:
+
+### Why it's hard
+- Correct global ordering requires merging *sorted* shard streams
+- OFFSET complicates it (need to discard first O rows of merged order)
+- Without matching local index, shard queries may be full scans
+
+### Approach (when implemented)
+1. **Eligibility:** Single-column ORDER BY, simple collation, no expressions
+2. **Execution:**
+   - Query each shard with `ORDER BY ... LIMIT (OFFSET + LIMIT)`
+   - K-way merge shard results using priority queue by ORDER BY key
+   - Apply OFFSET/LIMIT on merged stream
+3. **Optimization:** If local SQLite index matches ORDER BY, avoid full scan

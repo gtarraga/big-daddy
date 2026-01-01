@@ -4,7 +4,7 @@
 The **Conductor** is the query gateway (analogous to Vitess VTGate). It parses SQL, routes to shards, executes in parallel, and merges results.
 
 ## Entry Point
-`@/Users/thomas/projects/databases/packages/big-daddy/src/engine/conductor/index.ts`
+`packages/big-daddy/src/engine/conductor/index.ts`
 
 ```typescript
 ConductorClient.sql<T>(strings, ...values) → QueryResult<T>
@@ -19,7 +19,7 @@ ConductorClient.sql<T>(strings, ...values) → QueryResult<T>
 
 ## Directory Structure
 ```
-conductor/
+packages/big-daddy/src/engine/conductor/
 ├── index.ts          # ConductorClient class, createConductor()
 ├── types.ts          # QueryResult, QueryHandlerContext, error types
 ├── crud/             # SELECT, INSERT, UPDATE, DELETE handlers
@@ -64,6 +64,7 @@ interface QueryResult<T> {
 | CREATE TABLE | `handleCreateTable` | `tables/create-drop.ts` |
 | DROP TABLE | `handleDropTable` | `tables/create-drop.ts` |
 | CREATE INDEX | `handleCreateIndex` | `indexes/create.ts` |
+| DROP INDEX | `handleDropIndex` | `indexes/drop.ts` |
 | PRAGMA | `handlePragma` | `pragmas/pragma.ts` |
 
 ## Dependencies

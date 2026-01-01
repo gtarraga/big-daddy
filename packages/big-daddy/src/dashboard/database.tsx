@@ -7,6 +7,61 @@ import type {
 	VirtualIndex,
 } from "../engine/topology/types";
 
+// Type for extracting stats from query results
+interface QueryResultForStats {
+	rows?: unknown[];
+	rowsAffected?: number;
+	cacheStats?: {
+		cacheHit?: boolean;
+		totalHits?: number;
+		totalMisses?: number;
+		cacheSize?: number;
+	};
+	shardStats?: Array<{
+		shardId?: number;
+		rowsReturned?: number;
+	}>;
+}
+
+/**
+ * Query Stats Panel - shows key metrics from query execution
+ */
+const QueryStatsPanel = ({ result }: { result: QueryResultForStats }) => {
+	const { rows, cacheStats, shardStats } = result;
+
+	// Skip if no meaningful stats
+	if (!cacheStats && !shardStats) return null;
+
+	const rowCount = Array.isArray(rows) ? rows.length : 0;
+	const shardsQueried = shardStats?.length ?? 0;
+	const totalFetched = shardStats?.reduce((sum, s) => sum + (s.rowsReturned ?? 0), 0) ?? 0;
+	const cacheHit = cacheStats?.cacheHit;
+
+	return (
+		<div class="mb-3 p-3 bg-gray-50 border border-black text-xs font-mono grid grid-cols-2 sm:grid-cols-4 gap-2">
+			{shardsQueried > 0 && (
+				<div>
+					<span class="text-gray-600">Shards Queried:</span> <span class="font-semibold">{shardsQueried}</span>
+				</div>
+			)}
+			{totalFetched > 0 && (
+				<div>
+					<span class="text-gray-600">Rows Fetched:</span> <span class="font-semibold">{totalFetched}</span>
+				</div>
+			)}
+			<div>
+				<span class="text-gray-600">Rows Returned:</span> <span class="font-semibold">{rowCount}</span>
+			</div>
+			{cacheHit !== undefined && (
+				<div>
+					<span class="text-gray-600">Cache:</span>{' '}
+					<span class={cacheHit ? 'text-green-700 font-semibold' : 'text-gray-500'}>{cacheHit ? 'HIT' : 'MISS'}</span>
+				</div>
+			)}
+		</div>
+	);
+};
+
 /**
  * Dashboard page component - displays topology for a specific database
  */
@@ -75,6 +130,10 @@ export const DashboardPage = ({
 			{sqlResult && !sqlError && (
 				<div class="mt-4 border-2 border-black bg-white p-4">
 					<div class="text-sm font-semibold text-black mb-2">Result:</div>
+
+					{/* Query Stats Panel */}
+					{typeof sqlResult === 'object' && sqlResult !== null && <QueryStatsPanel result={sqlResult as QueryResultForStats} />}
+
 					<div class="text-xs font-mono text-black whitespace-pre-wrap break-words max-h-96 overflow-y-auto">
 						{JSON.stringify(sqlResult, null, 2)}
 					</div>

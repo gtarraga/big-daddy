@@ -363,6 +363,9 @@ export async function handleInsert(
 	// Add shard statistics
 	result.shardStats = execResult.shardStats;
 
+	// Override rowsAffected with logical row count (SQLite inflates it with index B-tree writes)
+	result.rowsAffected = statement.values?.length ?? 0;
+
 	// STEP 8: Bump row counts for each shard
 	// Use VALUES clause length (logical rows), not rowsAffected from SQLite
 	// SQLite's rowsWritten includes B-tree writes for indexes (e.g., composite PK),
